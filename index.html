@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#08080f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="webHYPATIA">
+  <title>webHYPATIA — ATLAS Event Display</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- GROUP SELECTOR OVERLAY — shown before events load -->
+<div id="group-overlay">
+  <div id="group-box">
+    <div id="group-logo">webHYPATIA</div>
+    <div id="group-subtitle">ATLAS · LHC · CERN</div>
+    <div class="group-field">
+      <label for="sel-uni">University</label>
+      <select id="sel-uni"></select>
+    </div>
+    <div class="group-field">
+      <label for="sel-grp">Group</label>
+      <select id="sel-grp"></select>
+    </div>
+    <button id="btn-start" disabled>Start →</button>
+    <div id="group-credit">
+      Based on <a href="https://zenodo.org/records/3406195" target="_blank" rel="noopener">HYPATIA 7.4</a>
+      by C. Kourkoumelis &amp; S. Vourakis (Univ. of Athens / IASA) · CC BY 3.0
+    </div>
+  </div>
+</div>
+
+<div id="app">
+
+  <!-- HEADER -->
+  <div id="header">
+    <div id="header-left">
+      <h1>webHYPATIA</h1>
+      <button id="btn-change-group" onclick="changeGroup()" title="Switch university / group">⇄ Group</button>
+    </div>
+    <!-- Navigation (HYPATIA-style: in toolbar) -->
+    <div id="header-nav">
+      <button class="nav-btn" id="btn-prev" disabled>◀ Prev</button>
+      <div id="evt-counter">— / 50</div>
+      <button class="nav-btn" id="btn-next">Next ▶</button>
+    </div>
+    <div id="event-meta">Loading…</div>
+    <!-- Mobile view tabs (only visible on small screens) -->
+    <div id="mobile-tabs">
+      <button class="mtab on" id="tab-rp" onclick="setMobileView('rp')">r-φ</button>
+      <button class="mtab"    id="tab-lz" onclick="setMobileView('lz')">ρ-z</button>
+    </div>
+    <button id="btn-light" onclick="toggleLight()">☀ Light</button>
+  </div>
+
+  <!-- MAIN AREA: left canvases + right data panel (HYPATIA layout) -->
+  <div id="main-area">
+
+    <!-- LEFT: canvases + controls -->
+    <div id="left-panel">
+
+      <!-- TWO CANVAS VIEWS: transverse (r-φ) + longitudinal (ρ-z) -->
+      <div id="canvas-area">
+        <div class="view-wrap" id="wrap-rp">
+          <canvas id="canvas-rp"></canvas>
+          <div class="view-label">Transverse (r-φ) &nbsp;·&nbsp; scroll/pinch to zoom &nbsp;·&nbsp; dbl-click to reset</div>
+        </div>
+        <div class="view-wrap" id="wrap-lz">
+          <canvas id="canvas-lz"></canvas>
+          <div class="view-label">Longitudinal (ρ-z) &nbsp;·&nbsp; scroll/pinch to zoom &nbsp;·&nbsp; dbl-click to reset</div>
+        </div>
+      </div>
+
+      <!-- LAYER TOGGLES — only raw detector signals; labeled objects hidden -->
+      <div id="toggle-bar">
+        <span class="show-lbl">Show:</span>
+        <button class="tgl on" data-layer="tracks"  data-color="#4fc3f7" onclick="setLayer('tracks',this)">Tracks</button>
+        <button class="tgl on" data-layer="emcal"   data-color="#ffd600" onclick="setLayer('emcal',this)">EM cal</button>
+        <button class="tgl on" data-layer="hadcal"  data-color="#ff9100" onclick="setLayer('hadcal',this)">HAD cal</button>
+        <button class="tgl on" data-layer="photons" data-color="#ffd600" onclick="setLayer('photons',this)">Clusters</button>
+        <button class="tgl on" data-layer="muons"   data-color="#b388ff" onclick="setLayer('muons',this)">Muon sys.</button>
+        <button class="tgl"    data-layer="met"     data-color="#f44336" onclick="setLayer('met',this)">MET</button>
+        <!-- Hidden labeled-object overlays (kept for code completeness, not shown in exercise) -->
+        <button id="btn-jets-tgl"  class="tgl" style="display:none" data-layer="jets"      data-color="#ff6d00" onclick="setLayer('jets',this)">Jets</button>
+        <button id="btn-elec-tgl"  class="tgl" style="display:none" data-layer="electrons" data-color="#00e676" onclick="setLayer('electrons',this)">Electrons</button>
+      </div>
+
+      <!-- SELECTION PANEL -->
+      <div id="selection-panel">
+        <div id="sel-instructions">Use the Discovery panel → click tracks &amp; clusters to identify particles</div>
+        <div id="sel-chips"></div>
+        <div id="sel-mass" style="display:none"></div>
+        <button id="btn-record" onclick="recordMeasurement()" style="display:none">⊕ Record</button>
+        <button id="sel-clear" onclick="clearSelection()" style="display:none">Clear</button>
+      </div>
+
+      <!-- MEASUREMENTS PANEL -->
+      <div id="meas-panel">
+        <div id="meas-header">
+          <span id="meas-count">No measurements yet</span>
+          <div id="meas-actions">
+            <button id="btn-export"     onclick="exportMeasurements()" disabled>⬇ Export .txt</button>
+            <button id="btn-meas-clear" onclick="clearMeasurements()" style="display:none">✕ Clear all</button>
+          </div>
+        </div>
+        <div id="meas-list"></div>
+      </div>
+
+    </div><!-- end left-panel -->
+
+    <!-- RIGHT: tabbed data panel -->
+    <div id="right-panel">
+      <div id="right-tab-bar">
+        <!-- Discovery is the default/first tab -->
+        <button class="rtab on" id="rtab-btn-objects" onclick="setRTab('objects')">Discovery</button>
+        <button class="rtab"    id="rtab-btn-cuts"    onclick="setRTab('cuts')">Cuts</button>
+      </div>
+
+      <!-- Discovery tab (default) — tracks & calorimeter clusters for particle ID -->
+      <div id="rtab-objects" class="rtab-content">
+        <div class="panel-title">Discovery <span class="obj-pt-note">click rows to select</span></div>
+
+        <!-- Tracks section: ID tracks; muon-matched ones shown with ⊙ badge -->
+        <div class="obj-section">
+          <div class="obj-sec-hdr disc-hdr-tracks">
+            Tracks
+          </div>
+          <div class="table-scroll">
+            <table class="obj-table">
+              <thead><tr>
+                <th>±</th><th>p<sub>T</sub> [GeV]</th><th>φ [rad]</th><th>θ [rad]</th>
+              </tr></thead>
+              <tbody id="disc-track-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Clusters section: EM calo deposits (photon+electron XML objects), anonymous -->
+        <div class="obj-section">
+          <div class="obj-sec-hdr disc-hdr-clust">
+            Calorimeter Clusters
+          </div>
+          <div class="table-scroll">
+            <table class="obj-table">
+              <thead><tr>
+                <th></th><th>E<sub>T</sub> [GeV]</th><th>φ [rad]</th><th>θ [rad]</th>
+              </tr></thead>
+              <tbody id="disc-clust-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Detector summary cards -->
+        <div id="pcards"></div>
+      </div>
+
+      <!-- Cuts tab -->
+      <div id="rtab-cuts" class="rtab-content" style="display:none">
+        <div class="panel-title">Track Quality Cuts</div>
+        <div class="cuts-grid">
+
+          <div class="cut-row">
+            <label class="cut-lbl">Min p<sub>T</sub> <span class="cut-unit">[GeV]</span></label>
+            <div class="cut-inputs">
+              <input type="range"  id="cut-minpt-r" min="0" max="10"  step="0.1" value="2"
+                     oninput="updateCut('minPt',this,'cut-minpt-n')">
+              <input type="number" id="cut-minpt-n" min="0" max="50"  step="0.1" value="2"
+                     onchange="updateCutN('minPt',this,'cut-minpt-r')">
+            </div>
+          </div>
+
+          <div class="cut-row">
+            <label class="cut-lbl">Max |d₀| <span class="cut-unit">[mm]</span></label>
+            <div class="cut-inputs">
+              <input type="range"  id="cut-d0-r" min="0" max="50"  step="0.5" value="5"
+                     oninput="updateCut('maxD0',this,'cut-d0-n')">
+              <input type="number" id="cut-d0-n" min="0" max="500" step="0.5" value="5"
+                     onchange="updateCutN('maxD0',this,'cut-d0-r')">
+            </div>
+          </div>
+
+          <div class="cut-row">
+            <label class="cut-lbl">Max |z₀| <span class="cut-unit">[mm]</span></label>
+            <div class="cut-inputs">
+              <input type="range"  id="cut-z0-r" min="0" max="500" step="5" value="20"
+                     oninput="updateCut('maxZ0',this,'cut-z0-n')">
+              <input type="number" id="cut-z0-n" min="0" max="2000" step="5" value="20"
+                     onchange="updateCutN('maxZ0',this,'cut-z0-r')">
+            </div>
+          </div>
+
+          <div class="cut-row">
+            <label class="cut-lbl">Max |η| <span class="cut-unit"></span></label>
+            <div class="cut-inputs">
+              <input type="range"  id="cut-eta-r" min="0" max="5"  step="0.1" value="2.5"
+                     oninput="updateCut('maxEta',this,'cut-eta-n')">
+              <input type="number" id="cut-eta-n" min="0" max="10" step="0.1" value="2.5"
+                     onchange="updateCutN('maxEta',this,'cut-eta-r')">
+            </div>
+          </div>
+
+          <div class="cut-desc">
+            Cuts apply to ID tracks shown in both views and listed in the Discovery tab.
+          </div>
+
+          <button class="cut-reset-btn" onclick="resetCuts()">↺ Reset to defaults</button>
+        </div>
+      </div>
+
+    </div><!-- end right-panel -->
+
+  </div><!-- end main-area -->
+
+  <div id="loading">Loading…</div>
+
+</div><!-- end app -->
+<script src="app.js"></script>
+</body>
+</html>
