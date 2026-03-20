@@ -115,6 +115,7 @@
           <div id="meas-actions">
             <button id="btn-export"     onclick="exportMeasurements()" disabled>⬇ Export .txt</button>
             <button id="btn-meas-clear" onclick="clearMeasurements()" style="display:none">✕ Clear all</button>
+            <button id="btn-reset-session" onclick="resetSession()" title="Clear saved progress and return to group selector">↺ Reset</button>
           </div>
         </div>
         <div id="meas-list"></div>
@@ -122,23 +123,16 @@
 
     </div><!-- end left-panel -->
 
-    <!-- RIGHT: tabbed data panel -->
+    <!-- RIGHT: discovery (top) + cuts (bottom) -->
     <div id="right-panel">
-      <div id="right-tab-bar">
-        <!-- Discovery is the default/first tab -->
-        <button class="rtab on" id="rtab-btn-objects" onclick="setRTab('objects')">Discovery</button>
-        <button class="rtab"    id="rtab-btn-cuts"    onclick="setRTab('cuts')">Cuts</button>
-      </div>
 
-      <!-- Discovery tab (default) — tracks & calorimeter clusters for particle ID -->
-      <div id="rtab-objects" class="rtab-content">
+      <!-- Discovery section — fills available space, tables scroll inside -->
+      <div id="disc-section">
         <div class="panel-title">Discovery <span class="obj-pt-note">click rows to select</span></div>
 
-        <!-- Tracks section: ID tracks; muon-matched ones shown with ⊙ badge -->
+        <!-- Tracks -->
         <div class="obj-section">
-          <div class="obj-sec-hdr disc-hdr-tracks">
-            Tracks
-          </div>
+          <div class="obj-sec-hdr disc-hdr-tracks">Tracks</div>
           <div class="table-scroll">
             <table class="obj-table">
               <thead><tr>
@@ -149,11 +143,9 @@
           </div>
         </div>
 
-        <!-- Clusters section: EM calo deposits — γ classification only -->
+        <!-- Calorimeter clusters -->
         <div class="obj-section">
-          <div class="obj-sec-hdr disc-hdr-clust">
-            Calorimeter Clusters
-          </div>
+          <div class="obj-sec-hdr disc-hdr-clust">Calorimeter Clusters</div>
           <div class="table-scroll">
             <table class="obj-table">
               <thead><tr>
@@ -168,53 +160,91 @@
         <div id="pcards"></div>
       </div>
 
-      <!-- Cuts tab -->
-      <div id="rtab-cuts" class="rtab-content" style="display:none">
+      <!-- Cuts section — pinned at bottom -->
+      <div id="cuts-section">
         <div class="panel-title">Track Quality Cuts</div>
         <div class="cuts-grid">
 
+          <!-- pT -->
           <div class="cut-row">
-            <label class="cut-lbl">Min p<sub>T</sub> <span class="cut-unit">[GeV]</span></label>
+            <label class="cut-lbl">p<sub>T</sub> <span class="cut-unit">[GeV]</span></label>
+            <span class="cut-op">≥</span>
             <div class="cut-inputs">
-              <input type="range"  id="cut-minpt-r" min="0" max="10"  step="0.1" value="2"
+              <input type="range"  id="cut-minpt-r" min="0" max="10" step="0.5" value="2"
                      oninput="updateCut('minPt',this,'cut-minpt-n')">
-              <input type="number" id="cut-minpt-n" min="0" max="50"  step="0.1" value="2"
+              <input type="number" id="cut-minpt-n" min="0" max="50" step="0.5" value="2"
                      onchange="updateCutN('minPt',this,'cut-minpt-r')">
             </div>
           </div>
 
+          <!-- d0 -->
           <div class="cut-row">
-            <label class="cut-lbl">Max |d₀| <span class="cut-unit">[mm]</span></label>
+            <label class="cut-lbl">|d₀| <span class="cut-unit">[cm]</span></label>
+            <span class="cut-op">&lt;</span>
             <div class="cut-inputs">
-              <input type="range"  id="cut-d0-r" min="0" max="50"  step="0.5" value="5"
+              <input type="range"  id="cut-d0-r" min="0" max="5"   step="0.05" value="0.25"
                      oninput="updateCut('maxD0',this,'cut-d0-n')">
-              <input type="number" id="cut-d0-n" min="0" max="500" step="0.5" value="5"
+              <input type="number" id="cut-d0-n" min="0" max="100" step="0.05" value="0.25"
                      onchange="updateCutN('maxD0',this,'cut-d0-r')">
             </div>
           </div>
 
+          <!-- z0 -->
           <div class="cut-row">
-            <label class="cut-lbl">Max |z₀| <span class="cut-unit">[mm]</span></label>
+            <label class="cut-lbl">|z₀| <span class="cut-unit">[cm]</span></label>
+            <span class="cut-op">&lt;</span>
             <div class="cut-inputs">
-              <input type="range"  id="cut-z0-r" min="0" max="500" step="5" value="20"
+              <input type="range"  id="cut-z0-r" min="0" max="100" step="1" value="20"
                      oninput="updateCut('maxZ0',this,'cut-z0-n')">
-              <input type="number" id="cut-z0-n" min="0" max="2000" step="5" value="20"
+              <input type="number" id="cut-z0-n" min="0" max="500" step="1" value="20"
                      onchange="updateCutN('maxZ0',this,'cut-z0-r')">
             </div>
           </div>
 
+          <!-- Pixel hits -->
           <div class="cut-row">
-            <label class="cut-lbl">Max |η| <span class="cut-unit"></span></label>
-            <div class="cut-inputs">
-              <input type="range"  id="cut-eta-r" min="0" max="5"  step="0.1" value="2.5"
-                     oninput="updateCut('maxEta',this,'cut-eta-n')">
-              <input type="number" id="cut-eta-n" min="0" max="10" step="0.1" value="2.5"
-                     onchange="updateCutN('maxEta',this,'cut-eta-r')">
+            <label class="cut-toggle-lbl">
+              <input type="checkbox" id="cut-pix-cb" checked
+                     onchange="toggleCut('usePixHits',this)">
+              Pixel hits
+            </label>
+            <span class="cut-op">≥</span>
+            <div class="cut-inputs cut-inputs-int">
+              <input type="number" id="cut-pix-n" min="0" max="20" step="1" value="2"
+                     onchange="updateCutN('minPixHits',this,'')">
+            </div>
+          </div>
+
+          <!-- SCT hits -->
+          <div class="cut-row">
+            <label class="cut-toggle-lbl">
+              <input type="checkbox" id="cut-sct-cb" checked
+                     onchange="toggleCut('useSCTHits',this)">
+              SCT hits
+            </label>
+            <span class="cut-op">≥</span>
+            <div class="cut-inputs cut-inputs-int">
+              <input type="number" id="cut-sct-n" min="0" max="40" step="1" value="7"
+                     onchange="updateCutN('minSCTHits',this,'')">
+            </div>
+          </div>
+
+          <!-- TRT hits -->
+          <div class="cut-row">
+            <label class="cut-toggle-lbl">
+              <input type="checkbox" id="cut-trt-cb" checked
+                     onchange="toggleCut('useTRTHits',this)">
+              TRT hits
+            </label>
+            <span class="cut-op">≥</span>
+            <div class="cut-inputs cut-inputs-int">
+              <input type="number" id="cut-trt-n" min="0" max="80" step="1" value="15"
+                     onchange="updateCutN('minTRTHits',this,'')">
             </div>
           </div>
 
           <div class="cut-desc">
-            Cuts apply to ID tracks shown in both views and listed in the Discovery tab.
+            d₀/z₀ in cm (2.5 mm = 0.25 cm). TRT unavailable for |η|&nbsp;&gt;&nbsp;2.0.
           </div>
 
           <button class="cut-reset-btn" onclick="resetCuts()">↺ Reset to defaults</button>

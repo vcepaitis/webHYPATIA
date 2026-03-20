@@ -155,8 +155,16 @@ const pan  = { rp: {x:0, y:0}, lz: {x:0, y:0} };
 // ════════════════════════════════════════════════
 //  TRACK CUTS — configurable quality filters
 // ════════════════════════════════════════════════
-// Units: pt in GeV, d0/z0 (as stored in JiveXML), eta dimensionless
-const trackCuts = { minPt: 2, maxD0: 5.0, maxZ0: 20.0, maxEta: 2.5 };
+// d0/z0 are stored in JiveXML in cm.  pt in GeV, eta dimensionless.
+// pT/d0/z0 are always-on (slider only); hit cuts are toggleable (checkbox + value).
+const trackCuts = {
+  minPt:  2.0,  maxEta: 2.5,       // always-on
+  maxD0:  0.25,                     // |d0| < 0.25 cm = 2.5 mm, always-on
+  maxZ0:  20.0,                     // |z0| < 20.0 cm, always-on
+  minPixHits:  2,  usePixHits: true,
+  minSCTHits:  7,  useSCTHits: true,
+  minTRTHits: 15,  useTRTHits: true,
+};
 
 // pT threshold for reconstructed objects (electrons, muons, photons)
 const OBJ_PT_MIN = 5.0; // GeV
@@ -165,11 +173,15 @@ const OBJ_PT_MIN = 5.0; // GeV
 const SHOW_ELECTRON_CLUSTERS = true;
 
 function passTrackCuts(tk) {
-  return Math.abs(tk.pt)    >= trackCuts.minPt
-      && Math.abs(tk.d0||0) <= trackCuts.maxD0
-      && Math.abs(tk.z0||0) <= trackCuts.maxZ0
-      && Math.abs(tk.eta)   <= trackCuts.maxEta
-      && (tk.nSiHits === undefined || tk.nSiHits >= 5); // silicon hit quality cut
+  if (Math.abs(tk.pt)    < trackCuts.minPt)  return false;
+  if (Math.abs(tk.eta)   > trackCuts.maxEta) return false;
+  if (Math.abs(tk.d0||0) > trackCuts.maxD0)  return false;
+  if (Math.abs(tk.z0||0) > trackCuts.maxZ0)  return false;
+  // Hit cuts: skip if hit count unavailable (< 0)
+  if (trackCuts.usePixHits && tk.nPixHits >= 0 && tk.nPixHits < trackCuts.minPixHits) return false;
+  if (trackCuts.useSCTHits && tk.nSCTHits >= 0 && tk.nSCTHits < trackCuts.minSCTHits) return false;
+  if (trackCuts.useTRTHits && tk.nTRTHits >= 0 && tk.nTRTHits < trackCuts.minTRTHits) return false;
+  return true;
 }
 
 // ════════════════════════════════════════════════
@@ -207,6 +219,7 @@ function parseTracks(el) {
   const pz_arr    = floats(child(el, 'polylineZ'));
   const npix_arr  = floats(child(el, 'nPixHits'));
   const nsct_arr  = floats(child(el, 'nSCTHits'));
+  const ntrt_arr  = floats(child(el, 'nTRTHits'));
   const tracks = []; let off = 0;
   for (let i = 0; i < count; i++) {
     const n = nPoly_arr[i] || 2;
@@ -214,11 +227,15 @@ function parseTracks(el) {
     const ys = py_arr.slice(off, off + n);
     off += n;
     const zs = pz_arr.slice(off - n, off);
+    // Store individual hit counts; -1 means not available (e.g. MS tracks)
+    const nPix = (npix_arr[i] != null) ? npix_arr[i] : -1;
+    const nSCT = (nsct_arr[i] != null) ? nsct_arr[i] : -1;
+    const nTRT = (ntrt_arr[i] != null) ? ntrt_arr[i] : -1;
     tracks.push({
       phi0: phi0_arr[i] || 0, pt: pt_arr[i] || 0,
       d0: d0_arr[i] || 0,    z0: z0_arr[i] || 0,
       eta: Math.asinh(cot_arr[i] || 0),
-      nSiHits: (npix_arr[i] || 0) + (nsct_arr[i] || 0),
+      nPixHits: nPix, nSCTHits: nSCT, nTRTHits: nTRT,
       xs, ys, zs
     });
   }
@@ -395,6 +412,24 @@ function parseEvent(xmlText) {
     }
   }
 
+  // Annotate MS tracks (muonTracks) with combined-fit pT so that pt=9999
+  // straight tracks display the physically correct combined muon pT, not the
+  // sentinel value.  Uses ΔR < 0.3 matching to StacoMuon / Muons object.
+  for (const msTk of muonTracks) {
+    let bestMu = null, bestDR = 0.3;
+    for (const mu of muonObjs) {
+      if (mu.pt <= 0) continue;
+      let dPhi = Math.abs(msTk.phi0 - mu.phi);
+      if (dPhi > Math.PI) dPhi = 2 * Math.PI - dPhi;
+      const dR = Math.sqrt(dPhi * dPhi + (msTk.eta - mu.eta) ** 2);
+      if (dR < bestDR) { bestDR = dR; bestMu = mu; }
+    }
+    if (bestMu) {
+      const charge = bestMu.pdgId === 13 ? 1 : bestMu.pdgId === -13 ? -1 : Math.sign(msTk.pt || 1);
+      msTk._displayPt = charge * bestMu.pt;
+    }
+  }
+
   return {
     meta, tracks, muonTracks, electrons, photons, jets, met, lar, tile, fcal,
     larBins  : phiBins(lar.energy,  lar.phi,  PHI_BINS, 0.5),  // was 0.15 — cut sub-threshold noise
@@ -489,16 +524,16 @@ function toggleSelect(hit) {
     if (selected.length >= 4) selected.shift();  // max 4 — drop oldest
     selected.push(hit);
   }
-  render(); updateSelectionPanel();
+  render(); updateSelectionPanel(); if (data) updateDiscoveryPanel(data);
 }
 
 function removeSelected(key) {
   selected = selected.filter(s => s.key !== key);
-  render(); updateSelectionPanel();
+  render(); updateSelectionPanel(); if (data) updateDiscoveryPanel(data);
 }
 
 function clearSelection() {
-  selected = []; render(); updateSelectionPanel();
+  selected = []; render(); updateSelectionPanel(); if (data) updateDiscoveryPanel(data);
 }
 
 function systemMass(particles) {
@@ -602,6 +637,7 @@ function selectionHint(particles) {
 }
 
 // Find the Z₁/Z₂ pairing that minimises |M₁−MZ| + |M₂−MZ| (best Z pair).
+// Only considers OSSF (opposite-sign same-flavour) pairings.
 // Returns [mZ1, mZ2] with mZ1 ≥ mZ2.
 function zPairMasses(leptons) {
   if (leptons.length < 4) return null;
@@ -610,6 +646,10 @@ function zPairMasses(leptons) {
   const pairings = [[0,1,2,3],[0,2,1,3],[0,3,1,2]];
   let best = null, bestScore = Infinity;
   for (const [a,b,c,d] of pairings) {
+    // Enforce OSSF: both pairs must be opposite-sign
+    const ossf1 = (leptons[a].charge || 0) * (leptons[b].charge || 0) < 0;
+    const ossf2 = (leptons[c].charge || 0) * (leptons[d].charge || 0) < 0;
+    if (!ossf1 || !ossf2) continue;
     const m1 = systemMass([leptons[a], leptons[b]]);
     const m2 = systemMass([leptons[c], leptons[d]]);
     const score = Math.abs(m1 - MZ) + Math.abs(m2 - MZ);
@@ -660,6 +700,7 @@ function recordMeasurement() {
   if (leptons.length >= 4) entry.zPairs = zPairInfo(leptons);
   measurements.push(entry);
   updateMeasurementBar();
+  saveState();
   // Flash the record button
   const btn = document.getElementById('btn-record');
   if (btn) { btn.textContent = '✓ Recorded'; btn.disabled = true;
@@ -678,10 +719,10 @@ function exportMeasurements() {
   for (const m of measurements) {
     const expLbl = EXPORT_LABEL[m.label] || m.label;
     if (m.zPairs) {
-      // 4-lepton event: three lines — Z₁ pair, Z₂ pair, four-object mass
+      // 4-lepton event: m4l first, then higher mll, then lower mll
+      lines.push(`${m.mass.toFixed(4)} ${expLbl}`);
       lines.push(`${m.zPairs[0].mass.toFixed(4)} ${m.zPairs[0].label}`);
       lines.push(`${m.zPairs[1].mass.toFixed(4)} ${m.zPairs[1].label}`);
-      lines.push(`${m.mass.toFixed(4)} ${expLbl}`);
     } else {
       lines.push(`${m.mass.toFixed(4)} ${expLbl}`);
     }
@@ -697,11 +738,12 @@ function exportMeasurements() {
 function deleteMeasurement(idx) {
   measurements.splice(idx, 1);
   updateMeasurementBar();
+  saveState();
 }
 
 function clearMeasurements() {
   if (measurements.length && !confirm(`Clear all ${measurements.length} recorded measurements?`)) return;
-  measurements = []; updateMeasurementBar();
+  measurements = []; updateMeasurementBar(); saveState();
 }
 
 function updateMeasurementBar() {
@@ -723,13 +765,27 @@ function updateMeasurementBar() {
     const row = document.createElement('div');
     row.className = 'meas-row';
     const lbl = CHANNEL_DISPLAY[m.label] || m.label;
-    let valText = `${m.mass.toFixed(2)} GeV`;
-    if (m.zPairs) valText += `  (${m.zPairs[0].mass.toFixed(1)} / ${m.zPairs[1].mass.toFixed(1)} GeV)`;
-    row.innerHTML =
-      `<span class="meas-lbl lbl-${m.label}">${lbl}</span>` +
-      `<span class="meas-val">${valText}</span>` +
-      `<span class="meas-ev">#${m.evIdx + 1}</span>` +
-      `<button class="meas-del" onclick="deleteMeasurement(${realIdx})" title="Remove">×</button>`;
+    const delBtn = `<button class="meas-del" onclick="deleteMeasurement(${realIdx})" title="Remove">×</button>`;
+    if (m.zPairs) {
+      // 4-lepton: main row for m4l, then two indented mll sub-rows
+      const pLbl0 = m.zPairs[0].label === 'e' ? 'ee' : 'μμ';
+      const pLbl1 = m.zPairs[1].label === 'e' ? 'ee' : 'μμ';
+      row.innerHTML =
+        `<span class="meas-lbl lbl-${m.label}">${lbl}</span>` +
+        `<span class="meas-val">m<sub>4ℓ</sub> = ${m.mass.toFixed(2)} GeV</span>` +
+        `<span class="meas-ev">#${m.evIdx + 1}</span>` +
+        delBtn +
+        `<div class="meas-sub">` +
+          `<span class="meas-sub-row">m<sub>ℓℓ</sub><sup>(1)</sup> = ${m.zPairs[0].mass.toFixed(2)} GeV <em>(${pLbl0})</em></span>` +
+          `<span class="meas-sub-row">m<sub>ℓℓ</sub><sup>(2)</sup> = ${m.zPairs[1].mass.toFixed(2)} GeV <em>(${pLbl1})</em></span>` +
+        `</div>`;
+    } else {
+      row.innerHTML =
+        `<span class="meas-lbl lbl-${m.label}">${lbl}</span>` +
+        `<span class="meas-val">${m.mass.toFixed(2)} GeV</span>` +
+        `<span class="meas-ev">#${m.evIdx + 1}</span>` +
+        delBtn;
+    }
     listEl.appendChild(row);
   });
 }
@@ -802,11 +858,11 @@ function updateSelectionPanel() {
     if (complete) {
       const m       = systemMass(selected);
       const leptons = selected.filter(p => p.type === 'electron' || p.type === 'muon');
-      let   text    = `${chName}  ·  M = ${m.toFixed(2)} GeV`;
+      let   text    = `${chName}  ·  m₄ℓ = ${m.toFixed(2)} GeV`;
 
       if (leptons.length >= 4) {
         const zp = zPairMasses(leptons);
-        if (zp) text += `  ·  (${zp[0].toFixed(1)} / ${zp[1].toFixed(1)} GeV)`;
+        if (zp) text += `  ·  mℓℓ: ${zp[0].toFixed(1)} / ${zp[1].toFixed(1)} GeV`;
       }
 
       massEl.textContent = text;
@@ -856,41 +912,42 @@ function classifySelected(key, newType) {
   } else if (newType === 'electron') {
     item.label  = item.charge > 0 ? 'e⁺' : item.charge < 0 ? 'e⁻' : 'e±';
     {
-      // Always update to cluster energy (HYPATIA convention): the EM cluster
-      // recovers bremsstrahlung photons that the track misses.
-      // Strategy: (1) exact trackIndex lookup in ElectronCollection,
-      //           (2) ΔR < 0.2 match to any EM cluster as fallback.
+      // Use the cluster ET/energy already annotated on the track at parse time
+      // (ΔR<0.1 match to ElectronCollection).  This is always correct.
+      // Never re-match via trackIndex: ElectronCollection.trackIndex points to
+      // GSFTrackParticleCandidate indices which do NOT correspond to the
+      // generic Tracks array, causing spurious coincidental matches.
       let clEnergy = 0, clPt = 0;
 
-      // (1) Direct lookup via trackIndex
       const tIdx = item.key && item.key.startsWith('track_')
         ? parseInt(item.key.replace('track_', ''), 10) : -1;
-      if (tIdx >= 0 && data && data.electrons) {
-        const elObj = data.electrons.find(e => e.trackIndex === tIdx);
-        if (elObj && elObj.energy > 0) { clEnergy = elObj.energy; clPt = elObj.pt; }
+      const origTk = (tIdx >= 0 && data) ? data.tracks[tIdx] : null;
+
+      // (1) Parse-time annotation — authoritative, already ΔR-matched correctly
+      if (origTk && origTk._elEnergy > 0) {
+        clEnergy = origTk._elEnergy;
+        clPt     = Math.abs(origTk._displayPt) || clEnergy / Math.cosh(item.eta);
       }
 
-      // (2) ΔR fallback
+      // (2) ΔR fallback: find the *closest* EM cluster within ΔR < 0.2
+      //     (use closest, not Array.find first-match, to avoid wrong-cluster collisions)
       if (clEnergy <= 0 && data) {
         const emClusters = mergedEmClusters(data);
-        const match = emClusters.find(cl => {
+        let bestDR = 0.2, bestCl = null;
+        for (const cl of emClusters) {
           let dPhi = Math.abs((cl._phi || cl.phi) - item.phi);
           if (dPhi > Math.PI) dPhi = 2*Math.PI - dPhi;
-          const dEta = cl.eta - item.eta;
-          return Math.sqrt(dPhi*dPhi + dEta*dEta) < 0.2;
-        });
-        if (match && match.energy > 0) { clEnergy = match.energy; clPt = match.pt; }
+          const dR = Math.sqrt(dPhi*dPhi + (cl.eta - item.eta)**2);
+          if (dR < bestDR) { bestDR = dR; bestCl = cl; }
+        }
+        if (bestCl && bestCl.energy > 0) { clEnergy = bestCl.energy; clPt = bestCl.pt; }
       }
 
       if (clEnergy > 0) {
         item.energy = clEnergy;
-        // Set displayed pT to cluster ET (HYPATIA convention).
-        // The electron object's pT IS the cluster ET — HYPATIA never uses raw
-        // ID-track curvature pT for electrons, because bremsstrahlung can make
-        // the track pT significantly lower (e.g. 27 GeV track vs 45.6 GeV cluster).
         item.pt = Math.sign(item.pt || 1) * (clPt > 0 ? clPt : clEnergy / Math.cosh(item.eta));
       } else {
-        item.energy = pMag;   // last resort: use track magnitude
+        item.energy = pMag;
       }
     }
   } else if (newType === 'muon') {
@@ -922,7 +979,7 @@ function resolveClustrType(phi, eta, tracks, clPt = 0) {
 function resolveTrackType(phi0, eta0, muonTracks) {
   const DR_MAX = 0.2;
   for (const mu of (muonTracks || [])) {
-    if (Math.abs(mu.pt) > 9990 || Math.abs(mu.pt) < OBJ_PT_MIN) continue;
+    if (Math.abs(mu.pt) < OBJ_PT_MIN) continue;
     let dPhi = Math.abs(mu.phi0 - phi0);
     if (dPhi > Math.PI) dPhi = 2*Math.PI - dPhi;
     const dEta = mu.eta - eta0;
@@ -952,20 +1009,12 @@ function pushHit(arr, key, type, label, x, y, r, pt, eta, phi, energy, charge) {
   arr.push({ key, type, label, x, y, r, pt, eta, phi, energy, charge: charge ?? 0 });
 }
 
-// Build merged EM-cluster list from PhotonCollection + ElectronCollection.
-// ElectronCollection entries that are within ΔR < 0.1 of an existing photon entry
-// are dropped to avoid duplicates; the rest are appended with unique keys.
+// Build EM-cluster list from PhotonCollection only (quality-filtered by ATLAS reconstruction).
+// ElectronCollection entries are intentionally excluded here — they appear via their associated
+// inner-detector tracks (annotated with _elEnergy/_displayPt at parse time).  Including raw
+// ElectronCollection clusters produced spurious extra entries (e.g. event003: 5 vs 2 in HYPATIA).
 function mergedEmClusters(ev) {
-  const photons = (ev.photons || []).map((ph, i) => ({ ...ph, _key: `photon_${i}`, _phi: ph.phi }));
-  const extra   = (ev.electrons || []).filter(el => {
-    return !photons.some(ph => {
-      let dPhi = Math.abs(ph._phi - el.phi);
-      if (dPhi > Math.PI) dPhi = 2*Math.PI - dPhi;
-      const dEta = ph.eta - el.eta;
-      return Math.sqrt(dPhi*dPhi + dEta*dEta) < 0.1;
-    });
-  }).map((el, i) => ({ ...el, _key: `ecl_el_ym_${i}`, _phi: el.phi }));
-  return [...photons, ...extra];
+  return (ev.photons || []).map((ph, i) => ({ ...ph, _key: `photon_${i}`, _phi: ph.phi }));
 }
 
 // ════════════════════════════════════════════════
@@ -1087,7 +1136,7 @@ function drawTransverse(ev) {
   // cue students use to identify muons, independent of the Muon Sys. toggle.
   const litSectors = new Set();
   for (const mu of ev.muonTracks) {
-    if (Math.abs(mu.pt) > 9990 || Math.abs(mu.pt) < OBJ_PT_MIN) continue;
+    if (Math.abs(mu.pt) < OBJ_PT_MIN) continue;
     for (let si = 0; si < MUON_SEGS.length; si++) {
       const seg = MUON_SEGS[si];
       const hwRad = (seg.hw + 3) * Math.PI / 180;  // +3° tolerance
@@ -1153,7 +1202,7 @@ function drawTransverse(ev) {
     // ── Muon spectrometer tracks — dim; light up when matched ID track is selected ──
   if (layers.muons) {
     for (const [muIdx, mu] of ev.muonTracks.entries()) {
-      if (Math.abs(mu.pt) > 9990 || Math.abs(mu.pt) < OBJ_PT_MIN) continue;
+      if (Math.abs(mu.pt) < OBJ_PT_MIN) continue;
       // Resolve matched ID track first so selection uses the exact shared key
       const matchedI = ev.tracks.findIndex(tk => {
         if (!passTrackCuts(tk)) return false;
@@ -1176,8 +1225,9 @@ function drawTransverse(ev) {
       ctxRP.fillStyle   = isMuSel ? COL.selected            : 'rgba(220,200,255,0.70)'; ctxRP.fill();
       ctxRP.strokeStyle = isMuSel ? COL.selected            : 'rgba(180,160,255,0.85)';
       ctxRP.lineWidth   = isMuSel ? 1.5 : 0.8; ctxRP.stroke();
-      const muCharge = mu.pt >= 0 ? 1 : -1;
-      pushHit(hitAreas, muKey, 'track', 'trk', mx, my, 12, mu.pt, mu.eta, mu.phi0, 0, muCharge);
+      const muDpt   = mu._displayPt ?? mu.pt;
+      const muCharge = muDpt >= 0 ? 1 : -1;
+      pushHit(hitAreas, muKey, 'track', 'trk', mx, my, 12, muDpt, mu.eta, mu.phi0, 0, muCharge);
     }
   }
 
@@ -1541,7 +1591,7 @@ function drawLongitudinal(ev) {
   // ── Muon tracks in ρ-z — dim; highlight when matched ID track is selected ──
   if (layers.muons) {
     for (const [muIdx, mu] of ev.muonTracks.entries()) {
-      if (Math.abs(mu.pt) > 9990 || Math.abs(mu.pt) < OBJ_PT_MIN) continue;
+      if (Math.abs(mu.pt) < OBJ_PT_MIN) continue;
       // Resolve matched ID track first so selection uses the exact shared key
       const matchedI = ev.tracks.findIndex(tk => {
         if (!passTrackCuts(tk)) return false;
@@ -1554,7 +1604,10 @@ function drawLongitudinal(ev) {
       const cotTh = Math.sinh(mu.eta);
       // Use actual 3D polyline if available (ys = polylineY = rho*sin(phi) projection)
       let zE, yE;
-      if (mu.zs && mu.zs.length >= 2) {
+      // Count how many polyline points fall within the LZ view window
+      const nInView = mu.zs ? mu.zs.filter((zk, k) =>
+        Math.abs(zk) <= VL && Math.abs(mu.ys[k]) <= VL).length : 0;
+      if (mu.zs && mu.zs.length >= 2 && nInView > 0) {
         ctxLZ.beginPath(); ctxLZ.moveTo(toX(mu.z0||0), toY(0));
         for (let k = 0; k < mu.zs.length; k++) {
           const zk = mu.zs[k], yk = mu.ys[k];
@@ -1568,21 +1621,25 @@ function drawLongitudinal(ev) {
           (Math.abs(zk)<=VL && Math.abs(mu.ys[k])<=VL) ? k : best, 0);
         zE = mu.zs[lastK]; yE = mu.ys[lastK];
       } else {
-        // Fallback: parametric to muon inner station
-        const maxRho = 900, maxZ = 900;
-        const R_ext  = Math.abs(cotTh) < 0.001 ? maxRho
-                     : Math.min(maxRho, maxZ / Math.abs(cotTh));
+        // Parametric fallback: forward/endcap muons whose polyline is outside the
+        // current view window (e.g. eta>2, z>VL).  Draw a straight line to the
+        // view edge so the track direction is still visible.
+        const R_ext = Math.abs(cotTh) < 0.001 ? VL
+                    : Math.min(VL, VL / Math.abs(cotTh));
         yE = R_ext * Math.sin(mu.phi0);
         zE = (mu.z0||0) + R_ext * cotTh;
+        // Clamp to view boundary so the dot lands on the canvas edge
+        if (Math.abs(zE) > VL) { const s = VL/Math.abs(zE); zE *= s; yE *= s; }
         ctxLZ.beginPath(); ctxLZ.moveTo(toX(mu.z0||0), toY(0)); ctxLZ.lineTo(toX(zE), toY(yE));
         ctxLZ.strokeStyle = isMuSel ? COL.selected : 'rgba(200,180,255,0.45)';
         ctxLZ.lineWidth   = isMuSel ? 2.2 : 1.0; ctxLZ.stroke();
       }
       // Only draw selRing for unmatched muons; matched ones already have an ID-track ring
       if (isMuSel && matchedI < 0) selRing(ctxLZ, toX(zE), toY(yE), 5);
-      const muChargeLZ = mu.pt >= 0 ? 1 : -1;
+      const muDptLZ    = mu._displayPt ?? mu.pt;
+      const muChargeLZ = muDptLZ >= 0 ? 1 : -1;
       pushHit(hitAreasLZ, muKeyLZ, 'track', 'trk', toX(zE), toY(yE), 12,
-              mu.pt, mu.eta, mu.phi0, 0, muChargeLZ);
+              muDptLZ, mu.eta, mu.phi0, 0, muChargeLZ);
     }
   }
 
@@ -1805,7 +1862,7 @@ function updateDiscoveryPanel(ev) {
     row.onclick = () => toggleSelect(hit);
   });
 
-  // ── Clusters — all EM deposits (PhotonCollection + deduplicated ElectronCollection)
+  // ── Clusters — PhotonCollection only (electrons shown via their ID tracks)
   const _allEm = mergedEmClusters(ev);
   const clItems = _allEm
   .filter(cl => cl.pt >= OBJ_PT_MIN && Math.abs(cl.eta) <= 4)
@@ -1851,7 +1908,7 @@ function updateUI(ev) {
   }
 
   const nTracks = (tracks||[]).filter(passTrackCuts).length;
-  const nMuTrks = (muonTracks||[]).filter(m => Math.abs(m.pt) < 9990).length;
+  const nMuTrks = (muonTracks||[]).filter(m => Math.abs(m.pt) >= OBJ_PT_MIN).length;
   const totEM   = (ev.lar.energy||[]).reduce((s,e) => s+(e>0.5?e:0), 0);
   const totHAD  = (ev.tile.energy||[]).reduce((s,e) => s+(e>0.3?e:0), 0);
 
@@ -1912,6 +1969,7 @@ async function go(delta) {
   isNavigating = true;
   try {
     idx = nxt;
+    saveState();
     selected = []; updateSelectionPanel();
     const ld = document.getElementById('loading');
     ld.style.display = 'block';
@@ -1926,40 +1984,23 @@ async function go(delta) {
 }
 
 // ════════════════════════════════════════════════
-//  NAVIGATION: hold-to-go on touch, instant on desktop
+//  NAVIGATION BUTTONS
 // ════════════════════════════════════════════════
 (function setupNavButtons() {
-  const NAV_HOLD_MS = 400;
   [['btn-prev', -1], ['btn-next', +1]].forEach(([id, delta]) => {
     const btn = document.getElementById(id);
     if (!btn) return;
-    let timer = null;
-    let holdStarted = false;
 
-    function cancel() {
-      if (timer) { clearTimeout(timer); timer = null; }
-      btn.classList.remove('nav-holding');
-      holdStarted = false;
-    }
-
-    // Touch: require hold
-    btn.addEventListener('touchstart', e => {
-      e.preventDefault();           // stop ghost click
-      if (btn.disabled) return;
-      holdStarted = true;
-      btn.classList.add('nav-holding');
-      timer = setTimeout(() => {
-        timer = null;
-        btn.classList.remove('nav-holding');
-        go(delta);
-      }, NAV_HOLD_MS);
+    // Touch: fire on touchend (tap) — preventDefault stops the ghost click
+    btn.addEventListener('touchstart', e => { e.preventDefault(); }, { passive: false });
+    btn.addEventListener('touchend', e => {
+      e.preventDefault();
+      if (!btn.disabled) go(delta);
     }, { passive: false });
-    btn.addEventListener('touchend',    cancel);
-    btn.addEventListener('touchcancel', cancel);
 
-    // Desktop: normal click (pointerType is 'mouse' or 'pen', not 'touch')
+    // Desktop/pen: normal click
     btn.addEventListener('click', e => {
-      if (e.pointerType === 'touch') return; // handled above
+      if (e.pointerType === 'touch') return; // already handled above
       go(delta);
     });
   });
@@ -1985,62 +2026,105 @@ function stepZoom(key, factor) {
 }
 
 function attachPointerHandlers(canvas, zoomKey) {
-  let pStart = null, pinchDist = 0, lastDrag = null, isDragging = false;
+  let pStart = null, lastDrag = null, isDragging = false;
+  let isPinching = false, pinchDist = 0, pinchMid = null;
 
-  // Helper: convert raw canvas coords → world coords (accounts for zoom + pan)
+  // Convert raw canvas coords → world coords
   function toWorld(rawX, rawY) {
     const cx = csz / 2, z = zoom[zoomKey], p = pan[zoomKey];
     return { x: (rawX - p.x - cx) / z + cx, y: (rawY - p.y - cx) / z + cx };
   }
 
+  // Zoom toward a specific raw-canvas point (mx, my) by factor f
+  function zoomAt(mx, my, f) {
+    const cx = csz / 2;
+    const newZ = Math.max(0.4, Math.min(16, zoom[zoomKey] * f));
+    const realF = newZ / zoom[zoomKey];
+    pan[zoomKey].x = (mx - cx) * (1 - realF) + pan[zoomKey].x * realF;
+    pan[zoomKey].y = (my - cx) * (1 - realF) + pan[zoomKey].y * realF;
+    zoom[zoomKey] = newZ;
+  }
+
+  // ── Mouse wheel zoom (toward cursor) ──
   canvas.addEventListener('wheel', e => {
     e.preventDefault();
-    const f = e.deltaY < 0 ? 1.15 : 0.87;
-    zoom[zoomKey] = Math.max(0.4, Math.min(16, zoom[zoomKey] * f));
+    const rect  = canvas.getBoundingClientRect();
+    const scale = csz / rect.width;
+    const mx = (e.clientX - rect.left) * scale;
+    const my = (e.clientY - rect.top)  * scale;
+    zoomAt(mx, my, e.deltaY < 0 ? 1.15 : 0.87);
     render();
   }, { passive: false });
 
-  canvas.addEventListener('dblclick', () => { zoom[zoomKey] = 1.0; pan[zoomKey].x = 0; pan[zoomKey].y = 0; render(); });
+  // Double-tap / double-click resets
+  canvas.addEventListener('dblclick', () => {
+    zoom[zoomKey] = 1.0; pan[zoomKey].x = 0; pan[zoomKey].y = 0; render();
+  });
 
+  // ── Touch: pinch-zoom + two-finger pan ──
   canvas.addEventListener('touchstart', e => {
     if (e.touches.length === 2) {
-      pinchDist = Math.hypot(
-        e.touches[0].clientX - e.touches[1].clientX,
-        e.touches[0].clientY - e.touches[1].clientY);
-    } else { pinchDist = 0; }
-  }, { passive: true });
-
-  canvas.addEventListener('touchmove', e => {
-    if (e.touches.length === 2 && pinchDist > 0) {
       e.preventDefault();
-      const d = Math.hypot(
-        e.touches[0].clientX - e.touches[1].clientX,
-        e.touches[0].clientY - e.touches[1].clientY);
-      zoom[zoomKey] = Math.max(0.4, Math.min(16, zoom[zoomKey] * d / pinchDist));
-      pinchDist = d; render();
+      isPinching = true;
+      pStart = null; lastDrag = null; isDragging = false; // cancel any single-finger drag
+      const t0 = e.touches[0], t1 = e.touches[1];
+      pinchDist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+      pinchMid  = { x: (t0.clientX + t1.clientX) / 2,
+                    y: (t0.clientY + t1.clientY) / 2 };
     }
   }, { passive: false });
 
-  canvas.addEventListener('touchend', () => { pinchDist = 0; }, { passive: true });
+  canvas.addEventListener('touchmove', e => {
+    if (e.touches.length === 2 && isPinching) {
+      e.preventDefault();
+      const t0 = e.touches[0], t1 = e.touches[1];
+      const rect  = canvas.getBoundingClientRect();
+      const scale = csz / rect.width;
 
+      const newDist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+      const newMid  = { x: (t0.clientX + t1.clientX) / 2,
+                        y: (t0.clientY + t1.clientY) / 2 };
+
+      // Zoom toward the pinch midpoint
+      const mx = (newMid.x - rect.left) * scale;
+      const my = (newMid.y - rect.top)  * scale;
+      if (pinchDist > 0) zoomAt(mx, my, newDist / pinchDist);
+
+      // Two-finger pan (track midpoint translation)
+      pan[zoomKey].x += (newMid.x - pinchMid.x) * scale;
+      pan[zoomKey].y += (newMid.y - pinchMid.y) * scale;
+
+      pinchDist = newDist;
+      pinchMid  = newMid;
+      render();
+    }
+  }, { passive: false });
+
+  canvas.addEventListener('touchend', e => {
+    if (e.touches.length < 2) {
+      isPinching = false; pinchDist = 0; pinchMid = null;
+    }
+  }, { passive: true });
+
+  // ── Pointer events: single-finger drag + tap/swipe ──
   canvas.addEventListener('pointercancel', () => {
     pStart = null; lastDrag = null; isDragging = false;
     canvas.style.cursor = zoom[zoomKey] > 1.05 ? 'grab' : 'default';
   }, { passive: true });
 
   canvas.addEventListener('pointerdown', e => {
-    if (!e.isPrimary) return;   // ignore non-primary pointers (second finger, etc.)
+    if (!e.isPrimary || isPinching) return;
     pStart   = { x: e.clientX, y: e.clientY };
     lastDrag = { x: e.clientX, y: e.clientY };
     isDragging = false;
   }, { passive: true });
 
   canvas.addEventListener('pointermove', e => {
+    if (isPinching) return; // pinch is handled by touchmove
     if (pStart) {
       const dx = e.clientX - pStart.x, dy = e.clientY - pStart.y;
       if (!isDragging && Math.sqrt(dx*dx + dy*dy) > 5) isDragging = true;
       if (isDragging) {
-        // Drag-to-pan
         const scale = csz / canvas.getBoundingClientRect().width;
         pan[zoomKey].x += (e.clientX - lastDrag.x) * scale;
         pan[zoomKey].y += (e.clientY - lastDrag.y) * scale;
@@ -2050,7 +2134,7 @@ function attachPointerHandlers(canvas, zoomKey) {
       }
       return;
     }
-    // Hover — highlight hit areas
+    // Hover — update cursor
     const areas = (zoomKey === 'rp') ? hitAreas : hitAreasLZ;
     const rect  = canvas.getBoundingClientRect();
     const rawX  = (e.clientX - rect.left) * (csz / rect.width);
@@ -2061,7 +2145,7 @@ function attachPointerHandlers(canvas, zoomKey) {
   }, { passive: true });
 
   canvas.addEventListener('pointerup', e => {
-    if (!pStart) return;
+    if (!pStart || isPinching) return;
     const dx = e.clientX - pStart.x, dy = e.clientY - pStart.y;
     const dist = Math.sqrt(dx*dx + dy*dy);
     const wasDragging = isDragging;
@@ -2069,7 +2153,7 @@ function attachPointerHandlers(canvas, zoomKey) {
     canvas.style.cursor = zoom[zoomKey] > 1.05 ? 'grab' : 'default';
 
     if (!wasDragging && dist < 12) {
-      // Tap/click — hit test
+      // Tap / click — hit test
       const areas = (zoomKey === 'rp') ? hitAreas : hitAreasLZ;
       const rect  = canvas.getBoundingClientRect();
       const rawX  = (e.clientX - rect.left) * (csz / rect.width);
@@ -2082,7 +2166,7 @@ function attachPointerHandlers(canvas, zoomKey) {
       }
       if (best) toggleSelect(best);
     } else if (!wasDragging && e.pointerType === 'touch' && Math.abs(dx) > 45 && zoom[zoomKey] < 1.2) {
-      // Swipe to navigate — only at default zoom
+      // Swipe to navigate — only at near-default zoom
       go(dx < 0 ? +1 : -1);
     }
   }, { passive: true });
@@ -2141,6 +2225,7 @@ function setupGroupSelector(manifest) {
 
   btnStart.addEventListener('click', () => {
     eventsBase = `events/${uniSel.value}/${grpSel.value}`;
+    clearSavedState();
     cache = {}; idx = 0; data = null;
     document.getElementById('group-overlay').style.display = 'none';
     startSession();
@@ -2150,6 +2235,7 @@ function setupGroupSelector(manifest) {
 function changeGroup() {
   console.warn('[DEBUG] changeGroup() called — stack trace:');
   console.trace();
+  clearSavedState();
   cache = {}; idx = 0; data = null; eventsBase = null;
   document.getElementById('group-overlay').style.display = 'flex';
 }
@@ -2159,7 +2245,8 @@ async function startSession() {
   ld.style.display = 'block';
   updateSelectionPanel();
   updateMeasurementBar();
-  try { data = await loadEvent(0); render(); updateUI(data); setRTab('objects'); }
+  saveState();
+  try { data = await loadEvent(idx); render(); updateUI(data); }
   catch(e) {
     document.getElementById('event-meta').textContent = 'Error loading events';
     console.error(e);
@@ -2167,6 +2254,33 @@ async function startSession() {
   ld.style.display = 'none';
   for (let i = 1; i <= 4 && i < N_EVENTS; i++)
     setTimeout(() => loadEvent(i).catch(()=>{}), i*600);
+}
+
+// ════════════════════════════════════════════════
+//  SESSION PERSISTENCE  (localStorage)
+// ════════════════════════════════════════════════
+const STORAGE_KEY = 'hypatia_session';
+
+function saveState() {
+  if (!eventsBase) return;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ eventsBase, idx, measurements }));
+  } catch(e) { /* storage full or private-mode — silent fail */ }
+}
+
+function clearSavedState() {
+  try { localStorage.removeItem(STORAGE_KEY); } catch(e) {}
+}
+
+function resetSession() {
+  if (!confirm('Clear all saved progress and return to the group selector?')) return;
+  clearSavedState();
+  location.reload();
+}
+
+function getSavedState() {
+  try { const r = localStorage.getItem(STORAGE_KEY); return r ? JSON.parse(r) : null; }
+  catch(e) { return null; }
 }
 
 async function init() {
@@ -2178,6 +2292,28 @@ async function init() {
     if (!r.ok) throw new Error('No manifest');
     const manifest = await r.json();
     setupGroupSelector(manifest);
+
+    // Restore a previous session if one was saved
+    const saved = getSavedState();
+    if (saved && saved.eventsBase) {
+      const parts = saved.eventsBase.split('/');   // "events/uni/group"
+      const uni = parts[1], grp = parts[2];
+      if (uni && grp && manifest[uni] && manifest[uni].includes(grp)) {
+        // Pre-select dropdowns
+        const uniSel = document.getElementById('sel-uni');
+        const grpSel = document.getElementById('sel-grp');
+        if (uniSel) { uniSel.value = uni; uniSel.dispatchEvent(new Event('change')); }
+        if (grpSel) grpSel.value = grp;
+        // Restore state
+        eventsBase   = saved.eventsBase;
+        idx          = saved.idx || 0;
+        measurements = Array.isArray(saved.measurements) ? saved.measurements : [];
+        document.getElementById('group-overlay').style.display = 'none';
+        updateMeasurementBar();
+        startSession();
+        return;
+      }
+    }
   } catch(e) {
     console.warn('Could not load manifest, falling back to default path', e);
     eventsBase = 'events';
@@ -2189,15 +2325,7 @@ async function init() {
 // ════════════════════════════════════════════════
 //  RIGHT PANEL TABS
 // ════════════════════════════════════════════════
-function setRTab(name) {
-  ['objects', 'cuts'].forEach(n => {
-    const btn = document.getElementById(`rtab-btn-${n}`);
-    const el  = document.getElementById(`rtab-${n}`);
-    const active = n === name;
-    if (btn) btn.classList.toggle('on', active);
-    if (el)  el.style.display = active ? (n === 'tracks' ? 'flex' : 'block') : 'none';
-  });
-}
+// setRTab removed — Discovery and Cuts are now a single combined panel
 
 // ════════════════════════════════════════════════
 //  LIGHT MODE
@@ -2226,18 +2354,34 @@ function updateCutN(key, numberEl, rangeId) {
   if (data) { render(); updateTrackTable(data); updateDiscoveryPanel(data); }
 }
 
+function toggleCut(key, cb) {
+  trackCuts[key] = cb.checked;
+  if (data) { render(); updateTrackTable(data); updateDiscoveryPanel(data); }
+}
+
 function resetCuts() {
-  const def = { minPt: 2.0, maxD0: 5.0, maxZ0:  20.0, maxEta: 2.5 };
-  Object.assign(trackCuts, def);
-  const set = (rid, nid, v) => {
-    const r = document.getElementById(rid), n = document.getElementById(nid);
-    if (r) r.value = v;
-    if (n) n.value = v;
+  const def = {
+    minPt:  2.0,
+    maxD0:  0.25,
+    maxZ0:  20.0,
+    minPixHits:  2, usePixHits: true,
+    minSCTHits:  7, useSCTHits: true,
+    minTRTHits: 15, useTRTHits: true,
   };
-  set('cut-minpt-r', 'cut-minpt-n', def.minPt);
-  set('cut-d0-r',    'cut-d0-n',    def.maxD0);
-  set('cut-z0-r',    'cut-z0-n',    def.maxZ0);
-  set('cut-eta-r',   'cut-eta-n',   def.maxEta);
+  Object.assign(trackCuts, def);
+  // Sync range+number inputs
+  const setN = (nid, v) => { const n = document.getElementById(nid); if (n) n.value = v; };
+  const setR = (rid, v) => { const r = document.getElementById(rid); if (r) r.value = v; };
+  const setCb = (id, v) => { const c = document.getElementById(id); if (c) c.checked = v; };
+  setR('cut-minpt-r', def.minPt);   setN('cut-minpt-n', def.minPt);
+  setR('cut-d0-r',    def.maxD0);   setN('cut-d0-n',    def.maxD0);
+  setR('cut-z0-r',    def.maxZ0);   setN('cut-z0-n',    def.maxZ0);
+  setN('cut-pix-n',   def.minPixHits);
+  setN('cut-sct-n',   def.minSCTHits);
+  setN('cut-trt-n',   def.minTRTHits);
+  setCb('cut-pix-cb', def.usePixHits);
+  setCb('cut-sct-cb', def.useSCTHits);
+  setCb('cut-trt-cb', def.useTRTHits);
   if (data) { render(); updateTrackTable(data); updateDiscoveryPanel(data); }
 }
 

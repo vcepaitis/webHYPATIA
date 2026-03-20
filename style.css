@@ -31,7 +31,7 @@ body.light {
   --col-sel-bg: rgba(142,36,170,0.12);
 }
 body.light #loading       { background: rgba(240,240,255,0.9); color: #1a1a30; }
-body.light .rtab.on       { background: #ccd8f5; border-color: #1976d2; color: #1565c0; }
+/* body.light .rtab.on — removed (tab bar removed) */
 body.light .mtab.on       { background: #ccd8f5; border-color: #1976d2; color: #1565c0; }
 body.light .nav-btn       { background: #ccd8f5; border-color: #1976d2; color: #1565c0; }
 body.light .nav-btn:active { background: #a8c4f0; }
@@ -47,6 +47,7 @@ body.light .meas-row      { border-color: var(--border); }
 body.light .meas-lbl      { background: rgba(0,0,0,0.06); }
 body.light .cut-inputs input[type="range"]  { accent-color: #1976d2; }
 body.light .cut-inputs input[type="number"] { background: var(--bg2); border-color: var(--border); color: var(--text); }
+body.light .cut-toggle-lbl input[type="checkbox"] { accent-color: #1976d2; }
 body.light .tgl.on {
   background: color-mix(in srgb, var(--tc, #555) 22%, transparent);
 }
@@ -105,14 +106,7 @@ html, body {
 .nav-btn:active  { background: #1a3a5c; }
 .nav-btn:disabled { opacity: .3; cursor: default; }
 /* Hold-progress fill on touch */
-.nav-btn.nav-holding {
-  background: linear-gradient(to right, #1a3a5c 0%, #0e1a30 0%);
-  animation: nav-fill 0.4s linear forwards;
-}
-@keyframes nav-fill {
-  from { background: linear-gradient(to right, #1a3a5c 0%,   #0e1a30 0%); }
-  to   { background: linear-gradient(to right, #1a3a5c 100%, #0e1a30 100%); }
-}
+/* .nav-btn.nav-holding removed — buttons now fire on tap, no hold needed */
 
 /* ── MAIN AREA ── */
 #main-area {
@@ -267,6 +261,12 @@ html, body {
 }
 #btn-meas-clear:hover { border-color: #ff5252; color: #ff5252; }
 
+#btn-reset-session {
+  background: none; border: 1px solid var(--border); color: var(--muted);
+  padding: 2px 7px; border-radius: 4px; font-size: 12px; cursor: pointer;
+}
+#btn-reset-session:hover { border-color: #ffa726; color: #ffa726; }
+
 #meas-list {
   display: flex; flex-wrap: wrap; gap: 3px 8px;
   max-height: 110px; overflow-y: auto;
@@ -274,10 +274,18 @@ html, body {
 }
 
 .meas-row {
-  display: inline-flex; align-items: center; gap: 5px;
+  display: inline-flex; flex-wrap: wrap; align-items: center; gap: 5px;
   font-size: 12px; background: var(--bg3);
-  border: 1px solid var(--border); border-radius: 3px; padding: 1px 6px;
+  border: 1px solid var(--border); border-radius: 3px; padding: 2px 6px;
 }
+.meas-sub {
+  flex: 0 0 100%; display: flex; flex-wrap: wrap; gap: 6px 14px;
+  padding: 1px 0 2px 18px;
+}
+.meas-sub-row {
+  font-size: 10px; color: var(--muted);
+}
+.meas-sub-row em { font-style: normal; opacity: 0.65; }
 .meas-lbl {
   font-weight: 600; font-size: 9px; padding: 0 3px; border-radius: 2px;
   background: rgba(255,255,255,0.06);
@@ -299,7 +307,7 @@ html, body {
 }
 .meas-del:hover { opacity: 1; color: #ff5252; }
 
-/* ── RIGHT PANEL (HYPATIA-style data sidebar) ── */
+/* ── RIGHT PANEL (combined discovery + cuts) ── */
 #right-panel {
   flex: 0 0 300px;
   display: flex; flex-direction: column;
@@ -308,26 +316,21 @@ html, body {
   overflow: hidden;
 }
 
-#right-tab-bar {
-  display: flex; gap: 3px; padding: 5px 6px 4px;
-  background: var(--bg2); border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.rtab {
-  flex: 1; padding: 4px 6px; border-radius: 4px;
-  font-size: 10.5px; cursor: pointer; user-select: none;
-  border: 1px solid var(--border); background: var(--bg3); color: var(--muted);
-  transition: all .15s;
-}
-.rtab.on { background: #0e1a30; border-color: #90caf9; color: #90caf9; }
-.rtab:hover:not(.on) { border-color: var(--muted); color: var(--text); }
-
-.rtab-content {
+/* Discovery section — fills available space, tables scroll inside */
+#disc-section {
   flex: 1 1 0; min-height: 0;
   padding: 4px 6px;
   display: flex; flex-direction: column;
   overflow: hidden;
+}
+
+/* Cuts section — pinned at bottom, fixed height, scrolls internally if needed */
+#cuts-section {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border);
+  padding: 4px 6px 6px;
+  overflow-y: auto;
+  max-height: 46%;
 }
 
 .panel-title {
@@ -477,14 +480,32 @@ html, body {
 }
 
 .cut-row {
-  display: flex; flex-direction: column; gap: 5px;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center; gap: 5px 8px;
 }
 
+/* Always-on label (no checkbox) */
 .cut-lbl {
   font-size: 12px; color: var(--text);
   display: flex; align-items: baseline; gap: 4px;
 }
+
+/* Checkbox + name label — inline, same column as plain cut-lbl */
+.cut-toggle-lbl {
+  font-size: 12px; color: var(--text);
+  display: flex; align-items: center; gap: 6px;
+  cursor: pointer; user-select: none;
+}
+.cut-toggle-lbl input[type="checkbox"] {
+  accent-color: #90caf9; width: 13px; height: 13px; flex-shrink: 0; cursor: pointer;
+}
 .cut-unit { font-size: 9px; color: var(--muted); }
+
+/* operator < / ≥ */
+.cut-op {
+  font-size: 11px; color: var(--muted); text-align: center; flex-shrink: 0;
+}
 
 .cut-inputs {
   display: flex; align-items: center; gap: 7px;
@@ -501,6 +522,8 @@ html, body {
 .cut-inputs input[type="number"]:focus {
   outline: none; border-color: #90caf9;
 }
+/* Integer-only cuts (no range slider) — just the number box */
+.cut-inputs-int input[type="number"] { width: 52px; }
 
 .cut-desc {
   font-size: 9.5px; color: var(--muted); line-height: 1.5;
@@ -582,16 +605,19 @@ html, body {
   /* ── Measurements panel ── */
   #meas-panel { padding: 5px 10px 6px; }
   #meas-list  { max-height: 80px; }
-  #btn-export, #btn-meas-clear { padding: 4px 10px; min-height: 30px; font-size: 10.5px; }
+  #btn-export, #btn-meas-clear, #btn-reset-session { padding: 4px 10px; min-height: 30px; font-size: 10.5px; }
 
-  /* ── Right panel: full-width data strip at bottom ── */
+  /* ── Right panel: full-width strip at bottom, scrolls as one unit ── */
   #right-panel {
-    flex: none; height: 280px;
+    flex: none; height: auto;
     max-width: none; border-left: none;
     border-top: 2px solid var(--border);
+    overflow-y: auto;
   }
-  #right-tab-bar { padding: 5px 6px 4px; gap: 4px; }
-  .rtab { padding: 7px 8px; font-size: 12px; min-height: 36px; }
+  #cuts-section  { max-height: none; overflow: visible; }
+  #disc-section  { flex: none; min-height: 0; overflow: visible; }
+  .table-scroll  { flex: none; max-height: 180px; }
+  /* #right-tab-bar / .rtab — removed (tab bar removed) */
 
   /* ── Track table: readable on small screen ── */
   #track-table { font-size: 12px; }
@@ -604,7 +630,7 @@ html, body {
   .mtab { padding: 6px 14px; font-size: 12px; min-height: 34px; }
 
   /* ── Cut controls: bigger inputs ── */
-  .cut-lbl { font-size: 12px; }
+  .cut-toggle-lbl { font-size: 12px; }
   .cut-inputs input[type="number"] { width: 62px; padding: 4px 5px; font-size: 12px; }
   .cuts-grid { gap: 16px; padding: 8px 2px; }
 
