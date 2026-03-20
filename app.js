@@ -1,5 +1,14 @@
 'use strict';
 
+// ── DEBUG INSTRUMENTATION (remove when bug is found) ──────────────────────
+window.addEventListener('error', e => {
+  console.error('[DEBUG] Uncaught error:', e.message, '\n  at', e.filename, 'line', e.lineno, '\n', e.error);
+});
+window.addEventListener('unhandledrejection', e => {
+  console.error('[DEBUG] Unhandled promise rejection:', e.reason);
+});
+// ──────────────────────────────────────────────────────────────────────────
+
 // ════════════════════════════════════════════════
 //  CONFIGURATION
 // ════════════════════════════════════════════════
@@ -141,6 +150,7 @@ const EXPORT_LABEL = {
 
 // Zoom state (per canvas)
 const zoom = { rp: 1.0, lz: 1.0 };
+const pan  = { rp: {x:0, y:0}, lz: {x:0, y:0} };
 
 // ════════════════════════════════════════════════
 //  TRACK CUTS — configurable quality filters
@@ -236,6 +246,53 @@ function parseParticles(el) {
   return result;
 }
 
+// Dedicated parser for ElectronCollection.
+// Unlike parseParticles, we:
+//  • do NOT filter on isEMString (all ATLAS electrons in this dataset have isEMString="none")
+//  • capture trackIndex so we can link each electron to its inner-detector track
+//  • pt is the cluster ET, energy is the cluster energy  (HYPATIA convention)
+function parseElectrons(el) {
+  if (!el) return [];
+  const count      = parseInt(el.getAttribute('count')) || 0;
+  const pt         = floats(child(el, 'pt'));       // cluster ET
+  const eta        = floats(child(el, 'eta'));
+  const phi        = floats(child(el, 'phi'));
+  const energy     = floats(child(el, 'energy'));   // cluster energy
+  const tIdxRaw    = (child(el, 'trackIndex') || '').trim();
+  const tIdxs      = tIdxRaw ? tIdxRaw.split(/\s+/).map(Number) : [];
+  const result = [];
+  for (let i = 0; i < count && i < pt.length; i++) {
+    const tIdx = (tIdxs[i] != null && !isNaN(tIdxs[i])) ? tIdxs[i] : -1;
+    result.push({
+      pt: pt[i]||0, eta: eta[i]||0, phi: phi[i]||0,
+      energy: energy[i]||0,
+      trackIndex: tIdx   // index into ev.tracks (generic Tracks collection)
+    });
+  }
+  return result;
+}
+
+// Dedicated parser for Muon particle collections (StacoMuonCollection / Muons).
+// Reads combined-fit pT, eta, phi, energy, and pdgId (for charge sign).
+function parseMuons(el) {
+  if (!el) return [];
+  const count  = parseInt(el.getAttribute('count')) || 0;
+  const pt     = floats(child(el, 'pt'));
+  const eta    = floats(child(el, 'eta'));
+  const phi    = floats(child(el, 'phi'));
+  const energy = floats(child(el, 'energy'));
+  const pdgRaw = (child(el, 'pdgId') || '').trim().split(/\s+/).map(Number);
+  const result = [];
+  for (let i = 0; i < count && i < pt.length; i++) {
+    result.push({
+      pt: pt[i]||0, eta: eta[i]||0, phi: phi[i]||0,
+      energy: energy[i]||0,
+      pdgId: pdgRaw[i] || 0   // 13 = µ+, -13 = µ−, 0 = unknown
+    });
+  }
+  return result;
+}
+
 function parseJets(el) {
   if (!el) return [];
   const count = parseInt(el.getAttribute('count')) || 0;
@@ -276,8 +333,14 @@ function parseEvent(xmlText) {
 
   const tracks     = parseTracks(findEl(root,'Track','Tracks'));
   const muonTracks = parseTracks(findEl(root,'Track','MuonSpectrometerTracks'));
-  const electrons  = parseParticles(findEl(root,'Electron','ElectronCollection')    || findEl(root,'Electron','ElectronAODCollection'));
-  const photons    = parseParticles(findEl(root,'Photon','PhotonCollection')        || findEl(root,'Photon','PhotonAODCollection'));
+  const electrons  = parseElectrons(findEl(root,'Electron','ElectronCollection'));
+  const photons    = parseParticles(findEl(root,'Photon','PhotonCollection'));
+  // StacoMuonCollection preferred (has pdgId/charge); fall back to Muons or CombinedFitMuons
+  const muonObjs   = parseMuons(
+    findEl(root,'Muon','StacoMuonCollection') ||
+    findEl(root,'Muon','Muons')               ||
+    findEl(root,'Muon','CombinedFitMuons')
+  );
   const jets       = ENABLE_JETS
     ? parseJets(findEl(root,'Jet','AntiKt4LCTopoJets') || findEl(root,'Jet','AntiKt4LCTopoJets_AOD'))
     : [];
@@ -290,6 +353,47 @@ function parseEvent(xmlText) {
   const lar  = parseCalo(findEl(root,'LAr', null));
   const tile = parseCalo(findEl(root,'TILE',null));
   const fcal = parseCalo(findEl(root,'FCAL',null));
+
+  // Annotate electron-matched tracks with cluster ET so every display context
+  // (canvas, track list, unclassified chip) shows the HYPATIA-consistent pT
+  // rather than the raw ID-track curvature pT.  Bremsstrahlung can make the
+  // raw pT substantially lower (e.g. 27 GeV track vs 45.6 GeV cluster).
+  for (const el of electrons) {
+    if (el.pt <= 0) continue;
+    let bestI = -1, bestDR = 0.1;
+    for (let i = 0; i < tracks.length; i++) {
+      const tk = tracks[i];
+      let dPhi = Math.abs(tk.phi0 - el.phi);
+      if (dPhi > Math.PI) dPhi = 2 * Math.PI - dPhi;
+      const dR = Math.sqrt(dPhi * dPhi + (tk.eta - el.eta) ** 2);
+      if (dR < bestDR) { bestDR = dR; bestI = i; }
+    }
+    if (bestI >= 0) {
+      // Preserve charge sign from raw track; magnitude from cluster ET
+      tracks[bestI]._displayPt = Math.sign(tracks[bestI].pt || 1) * el.pt;
+      tracks[bestI]._elEnergy  = el.energy;
+    }
+  }
+
+  // Same annotation for muon-matched tracks: use combined-fit muon pT (from
+  // StacoMuonCollection / Muons), not the raw ID track curvature pT.
+  for (const mu of muonObjs) {
+    if (mu.pt <= 0) continue;
+    let bestI = -1, bestDR = 0.2;
+    for (let i = 0; i < tracks.length; i++) {
+      const tk = tracks[i];
+      let dPhi = Math.abs(tk.phi0 - mu.phi);
+      if (dPhi > Math.PI) dPhi = 2 * Math.PI - dPhi;
+      const dR = Math.sqrt(dPhi * dPhi + (tk.eta - mu.eta) ** 2);
+      if (dR < bestDR) { bestDR = dR; bestI = i; }
+    }
+    if (bestI >= 0 && !tracks[bestI]._displayPt) {  // don't overwrite electron annotation
+      // pdgId 13 = µ+, -13 = µ−; fall back to charge sign from raw track pT
+      const charge = mu.pdgId === 13 ? 1 : mu.pdgId === -13 ? -1 : Math.sign(tracks[bestI].pt || 1);
+      tracks[bestI]._displayPt = charge * mu.pt;
+      tracks[bestI]._muEnergy  = mu.energy;
+    }
+  }
 
   return {
     meta, tracks, muonTracks, electrons, photons, jets, met, lar, tile, fcal,
@@ -401,11 +505,22 @@ function systemMass(particles) {
   let E=0, px=0, py=0, pz=0;
   for (const p of particles) {
     if (p.type === 'track' || p.type === 'cluster') continue;  // unclassified — skip
-    const absPt = Math.abs(p.pt);       // pt sign = charge; phi already gives direction
-    const pMag  = absPt * Math.cosh(p.eta);
-    const ep    = (p.type === 'muon')
-      ? Math.sqrt(pMag**2 + MUON_MASS**2)
-      : (p.energy || pMag);
+    let absPt, ep;
+    if (p.type === 'muon') {
+      // Muons: use track momentum (well-measured, no bremsstrahlung)
+      absPt = Math.abs(p.pt);
+      ep    = Math.sqrt((absPt * Math.cosh(p.eta))**2 + MUON_MASS**2);
+    } else if (p.type === 'electron' && p.energy > 0) {
+      // Electrons: use calorimeter cluster energy (HYPATIA convention).
+      // Cluster ET = energy/cosh(η) gives the transverse momentum scale;
+      // using it for all components ensures a consistent massless 4-vector.
+      ep    = p.energy;
+      absPt = p.energy / Math.cosh(p.eta);   // cluster ET
+    } else {
+      // Photons or any other classified particle
+      absPt = Math.abs(p.pt);
+      ep    = p.energy || (absPt * Math.cosh(p.eta));
+    }
     px += absPt * Math.cos(p.phi);
     py += absPt * Math.sin(p.phi);
     pz += absPt * Math.sinh(p.eta);
@@ -534,7 +649,14 @@ function recordMeasurement() {
   const label   = channelLabel(selected);
   const evNum   = data ? data.meta.evNum : '?';
   const leptons = selected.filter(p => p.type === 'electron' || p.type === 'muon');
-  const entry   = { mass, label, evNum };
+  // Only one measurement per event — flash the button to inform the student
+  if (measurements.some(m => m.evNum === evNum)) {
+    const btn = document.getElementById('btn-record');
+    if (btn) { btn.textContent = '✗ Already recorded'; btn.disabled = true;
+      setTimeout(() => { btn.textContent = '⊕ Record'; btn.disabled = false; }, 1200); }
+    return;
+  }
+  const entry   = { mass, label, evNum, evIdx: idx };
   if (leptons.length >= 4) entry.zPairs = zPairInfo(leptons);
   measurements.push(entry);
   updateMeasurementBar();
@@ -542,6 +664,12 @@ function recordMeasurement() {
   const btn = document.getElementById('btn-record');
   if (btn) { btn.textContent = '✓ Recorded'; btn.disabled = true;
     setTimeout(() => { btn.textContent = '⊕ Record'; btn.disabled = false; }, 900); }
+  // Clear selection so btn-record hides and confirm-on-navigate won't fire
+  selected = [];
+  render();
+  updateSelectionPanel();
+  // Advance to next event automatically
+  go(1);
 }
 
 function exportMeasurements() {
@@ -566,6 +694,11 @@ function exportMeasurements() {
   document.body.removeChild(a); URL.revokeObjectURL(url);
 }
 
+function deleteMeasurement(idx) {
+  measurements.splice(idx, 1);
+  updateMeasurementBar();
+}
+
 function clearMeasurements() {
   if (measurements.length && !confirm(`Clear all ${measurements.length} recorded measurements?`)) return;
   measurements = []; updateMeasurementBar();
@@ -583,9 +716,10 @@ function updateMeasurementBar() {
   exportBtn.disabled = n === 0;
   clearBtn.style.display = n > 0 ? 'inline-block' : 'none';
 
-  // Populate the recent list (last 8)
+  // Populate full list (all measurements, newest first)
   listEl.innerHTML = '';
-  measurements.slice(-8).reverse().forEach((m) => {
+  measurements.slice().reverse().forEach((m, revIdx) => {
+    const realIdx = measurements.length - 1 - revIdx;
     const row = document.createElement('div');
     row.className = 'meas-row';
     const lbl = CHANNEL_DISPLAY[m.label] || m.label;
@@ -594,15 +728,10 @@ function updateMeasurementBar() {
     row.innerHTML =
       `<span class="meas-lbl lbl-${m.label}">${lbl}</span>` +
       `<span class="meas-val">${valText}</span>` +
-      `<span class="meas-ev">evt ${m.evNum}</span>`;
+      `<span class="meas-ev">#${m.evIdx + 1}</span>` +
+      `<button class="meas-del" onclick="deleteMeasurement(${realIdx})" title="Remove">×</button>`;
     listEl.appendChild(row);
   });
-  if (n > 8) {
-    const more = document.createElement('div');
-    more.className = 'meas-more';
-    more.textContent = `+ ${n-8} more`;
-    listEl.appendChild(more);
-  }
 }
 
 function updateSelectionPanel() {
@@ -633,23 +762,16 @@ function updateSelectionPanel() {
         `<button class="cls-btn cls-e"  onclick="classifySelected('${p.key}','electron')">${eL}</button>` +
         `<button class="cls-btn cls-mu" onclick="classifySelected('${p.key}','muon')">${muL}</button>` +
         `<span class="rm" onclick="removeSelected('${p.key}')">×</span>`;
-    } else if (p.type === 'cluster') {
-      // Unmatched cluster — only γ allowed; e/μ grayed
+    } else if (p.type === 'cluster' || p.type === 'ecluster') {
       chip.className = 'sel-chip t-cluster needs-classify';
-      chip.innerHTML =
-        `<span class="chip-pt"><b>${p.pt.toFixed(1)}</b> GeV — classify:</span>` +
-        `<button class="cls-btn cls-g"  onclick="classifySelected('${p.key}','photon')">γ</button>` +
-        `<button class="cls-btn cls-dim" disabled>e</button>` +
-        `<button class="cls-btn cls-dim" disabled>μ</button>` +
-        `<span class="rm" onclick="removeSelected('${p.key}')">×</span>`;
-    } else if (p.type === 'ecluster') {
-      // Track-matched cluster — γ only (student infers e± from the matched track)
-      chip.className = 'sel-chip t-cluster needs-classify';
+      const eBtn = p.type === 'ecluster'
+        ? `<button class="cls-btn cls-e cls-disabled" disabled
+             title="To classify as electron, select the matching inner-detector track instead">e</button>`
+        : '';
       chip.innerHTML =
         `<span class="chip-pt"><b>${p.pt.toFixed(1)}</b> GeV — classify:</span>` +
         `<button class="cls-btn cls-g" onclick="classifySelected('${p.key}','photon')">γ</button>` +
-        `<button class="cls-btn cls-dim" disabled>e</button>` +
-        `<button class="cls-btn cls-dim" disabled>μ</button>` +
+        eBtn +
         `<span class="rm" onclick="removeSelected('${p.key}')">×</span>`;
     } else {
       // Already classified — normal chip
@@ -733,8 +855,44 @@ function classifySelected(key, newType) {
     item.charge = 0;
   } else if (newType === 'electron') {
     item.label  = item.charge > 0 ? 'e⁺' : item.charge < 0 ? 'e⁻' : 'e±';
-    // ecluster already has calo energy stored; bare track needs pMag
-    if (item.energy <= 0) item.energy = pMag;
+    {
+      // Always update to cluster energy (HYPATIA convention): the EM cluster
+      // recovers bremsstrahlung photons that the track misses.
+      // Strategy: (1) exact trackIndex lookup in ElectronCollection,
+      //           (2) ΔR < 0.2 match to any EM cluster as fallback.
+      let clEnergy = 0, clPt = 0;
+
+      // (1) Direct lookup via trackIndex
+      const tIdx = item.key && item.key.startsWith('track_')
+        ? parseInt(item.key.replace('track_', ''), 10) : -1;
+      if (tIdx >= 0 && data && data.electrons) {
+        const elObj = data.electrons.find(e => e.trackIndex === tIdx);
+        if (elObj && elObj.energy > 0) { clEnergy = elObj.energy; clPt = elObj.pt; }
+      }
+
+      // (2) ΔR fallback
+      if (clEnergy <= 0 && data) {
+        const emClusters = mergedEmClusters(data);
+        const match = emClusters.find(cl => {
+          let dPhi = Math.abs((cl._phi || cl.phi) - item.phi);
+          if (dPhi > Math.PI) dPhi = 2*Math.PI - dPhi;
+          const dEta = cl.eta - item.eta;
+          return Math.sqrt(dPhi*dPhi + dEta*dEta) < 0.2;
+        });
+        if (match && match.energy > 0) { clEnergy = match.energy; clPt = match.pt; }
+      }
+
+      if (clEnergy > 0) {
+        item.energy = clEnergy;
+        // Set displayed pT to cluster ET (HYPATIA convention).
+        // The electron object's pT IS the cluster ET — HYPATIA never uses raw
+        // ID-track curvature pT for electrons, because bremsstrahlung can make
+        // the track pT significantly lower (e.g. 27 GeV track vs 45.6 GeV cluster).
+        item.pt = Math.sign(item.pt || 1) * (clPt > 0 ? clPt : clEnergy / Math.cosh(item.eta));
+      } else {
+        item.energy = pMag;   // last resort: use track magnitude
+      }
+    }
   } else if (newType === 'muon') {
     item.label  = item.charge > 0 ? 'μ⁺' : 'μ⁻';
     item.energy = Math.sqrt(pMag**2 + MUON_MASS**2);
@@ -746,28 +904,29 @@ function classifySelected(key, newType) {
 // ════════════════════════════════════════════════
 //  TYPE RESOLUTION HELPERS  (used by canvas draw + Discovery panel)
 // ════════════════════════════════════════════════
-// Return 'electron' if any passing ID track is within 0.15 rad of phi; else 'photon'
-function resolveClustrType(phi, tracks, clPt = 0) {
-  // Tight window (0.05 rad ≈ 3°) + track pT must be >= 40% of cluster ET
-  // Prevents lone low-pT background tracks from mis-labelling photon clusters as electrons
-  const PHI_TOL = 0.05;
+// Return 'electron' if any passing ID track is within ΔR < 0.1 of the cluster; else 'photon'
+function resolveClustrType(phi, eta, tracks, clPt = 0) {
+  const DR_MAX = 0.1;
   for (const tk of (tracks || [])) {
     if (!passTrackCuts(tk)) continue;
     if (clPt > 0 && Math.abs(tk.pt) < clPt * 0.40) continue;
-    let d = Math.abs(tk.phi0 - phi);
-    if (d > Math.PI) d = 2*Math.PI - d;
-    if (d < PHI_TOL) return 'electron';
+    let dPhi = Math.abs(tk.phi0 - phi);
+    if (dPhi > Math.PI) dPhi = 2*Math.PI - dPhi;
+    const dEta = tk.eta - eta;
+    const dR = Math.sqrt(dPhi*dPhi + dEta*dEta);
+    if (dR < DR_MAX) return 'electron';
   }
   return 'photon';
 }
-// Return 'muon' if any muon spectrometer track is within 0.20 rad of phi0; else 'track'
-function resolveTrackType(phi0, muonTracks) {
-  const PHI_TOL = 0.20;
+// Return 'muon' if any muon spectrometer track is within ΔR < 0.2 of the ID track; else 'track'
+function resolveTrackType(phi0, eta0, muonTracks) {
+  const DR_MAX = 0.2;
   for (const mu of (muonTracks || [])) {
     if (Math.abs(mu.pt) > 9990 || Math.abs(mu.pt) < OBJ_PT_MIN) continue;
-    let d = Math.abs(mu.phi0 - phi0);
-    if (d > Math.PI) d = 2*Math.PI - d;
-    if (d < PHI_TOL) return 'muon';
+    let dPhi = Math.abs(mu.phi0 - phi0);
+    if (dPhi > Math.PI) dPhi = 2*Math.PI - dPhi;
+    const dEta = mu.eta - eta0;
+    if (Math.sqrt(dPhi*dPhi + dEta*dEta) < DR_MAX) return 'muon';
   }
   return 'track';
 }
@@ -793,6 +952,22 @@ function pushHit(arr, key, type, label, x, y, r, pt, eta, phi, energy, charge) {
   arr.push({ key, type, label, x, y, r, pt, eta, phi, energy, charge: charge ?? 0 });
 }
 
+// Build merged EM-cluster list from PhotonCollection + ElectronCollection.
+// ElectronCollection entries that are within ΔR < 0.1 of an existing photon entry
+// are dropped to avoid duplicates; the rest are appended with unique keys.
+function mergedEmClusters(ev) {
+  const photons = (ev.photons || []).map((ph, i) => ({ ...ph, _key: `photon_${i}`, _phi: ph.phi }));
+  const extra   = (ev.electrons || []).filter(el => {
+    return !photons.some(ph => {
+      let dPhi = Math.abs(ph._phi - el.phi);
+      if (dPhi > Math.PI) dPhi = 2*Math.PI - dPhi;
+      const dEta = ph.eta - el.eta;
+      return Math.sqrt(dPhi*dPhi + dEta*dEta) < 0.1;
+    });
+  }).map((el, i) => ({ ...el, _key: `ecl_el_ym_${i}`, _phi: el.phi }));
+  return [...photons, ...extra];
+}
+
 // ════════════════════════════════════════════════
 //  DRAW: TRANSVERSE  (r-φ)
 // ════════════════════════════════════════════════
@@ -811,9 +986,9 @@ function drawTransverse(ev) {
   ctxRP.clearRect(0, 0, csz, csz);
   ctxRP.fillStyle = '#000'; ctxRP.fillRect(0, 0, csz, csz);
 
-  // Apply zoom centred on canvas centre
+  // Apply zoom + pan centred on canvas centre
   ctxRP.save();
-  ctxRP.translate(cx, cy); ctxRP.scale(zoom.rp, zoom.rp); ctxRP.translate(-cx, -cy);
+  ctxRP.translate(cx + pan.rp.x, cy + pan.rp.y); ctxRP.scale(zoom.rp, zoom.rp); ctxRP.translate(-cx, -cy);
 
   // ── Background region fills ────────────────────────────────────────────
   // Outermost fill — muon system region (dark, neutral)
@@ -950,8 +1125,9 @@ function drawTransverse(ev) {
       if (!passTrackCuts(tk)) continue;
       const key = `track_${origI}`;
       const sel = isSelected(key);
-      const col = sel ? COL.selected : trackColor(tk.pt);
-      const lw  = sel ? 2.0 : (Math.abs(tk.pt) > 3 ? 1.2 : 0.65);
+      const dpt = tk._displayPt ?? tk.pt;   // cluster ET for electron tracks, raw pT otherwise
+      const col = sel ? COL.selected : trackColor(dpt);
+      const lw  = sel ? 2.0 : (Math.abs(dpt) > 3 ? 1.2 : 0.65);
       let hx, hy;
       if (!tk.xs || tk.xs.length < 2) {
         hx = phiX(D.trtOuter*0.95, tk.phi0);
@@ -967,9 +1143,10 @@ function drawTransverse(ev) {
         hx = ptX(tk.xs[tk.xs.length-1]);
         hy = ptY(tk.ys[tk.ys.length-1]);
       }
+      if (sel) selRing(ctxRP, hx, hy, 5);
       // Type left as 'track' — user classifies as electron or muon in selection panel
       const tkCharge = tk.pt >= 0 ? 1 : -1;
-      pushHit(hitAreas, key, 'track', 'trk', hx, hy, 7, tk.pt, tk.eta, tk.phi0, 0, tkCharge);
+      pushHit(hitAreas, key, 'track', 'trk', hx, hy, 7, dpt, tk.eta, tk.phi0, 0, tkCharge);
     }
   }
 
@@ -977,11 +1154,15 @@ function drawTransverse(ev) {
   if (layers.muons) {
     for (const [muIdx, mu] of ev.muonTracks.entries()) {
       if (Math.abs(mu.pt) > 9990 || Math.abs(mu.pt) < OBJ_PT_MIN) continue;
-      const isMuSel = selected.some(s => {
-        let d = Math.abs((s.phi||0) - mu.phi0);
-        if (d > Math.PI) d = 2*Math.PI - d;
-        return d < 0.25;
+      // Resolve matched ID track first so selection uses the exact shared key
+      const matchedI = ev.tracks.findIndex(tk => {
+        if (!passTrackCuts(tk)) return false;
+        let dPhi = Math.abs(tk.phi0 - mu.phi0); if (dPhi > Math.PI) dPhi = 2*Math.PI - dPhi;
+        const dEta = tk.eta - mu.eta;
+        return Math.sqrt(dPhi*dPhi + dEta*dEta) < 0.20;
       });
+      const muKey  = matchedI >= 0 ? `track_${matchedI}` : `muon_${muIdx}`;
+      const isMuSel = isSelected(muKey);   // exact key lookup — no phi-proximity false positives
       if (mu.xs && mu.xs.length >= 2) {
         ctxRP.beginPath(); ctxRP.moveTo(ptX(mu.xs[0]), ptY(mu.ys[0]));
         for (let k = 1; k < mu.xs.length; k++) ctxRP.lineTo(ptX(mu.xs[k]), ptY(mu.ys[k]));
@@ -989,18 +1170,12 @@ function drawTransverse(ev) {
         ctxRP.lineWidth   = isMuSel ? 2.5 : 1.2; ctxRP.stroke();
       }
       const mx = phiX(492, mu.phi0), my = phiY(492, mu.phi0);
-      if (isMuSel) selRing(ctxRP, mx, my, 5);
+      // Only draw selRing for unmatched muons; matched ones already have an ID-track ring
+      if (isMuSel && matchedI < 0) selRing(ctxRP, mx, my, 5);
       ctxRP.beginPath(); ctxRP.arc(mx, my, isMuSel ? 6 : 4, 0, 2*Math.PI);
       ctxRP.fillStyle   = isMuSel ? COL.selected            : 'rgba(220,200,255,0.70)'; ctxRP.fill();
       ctxRP.strokeStyle = isMuSel ? COL.selected            : 'rgba(180,160,255,0.85)';
       ctxRP.lineWidth   = isMuSel ? 1.5 : 0.8; ctxRP.stroke();
-      // Clickable hit — links to matched ID track so both parts highlight together
-      const matchedI = ev.tracks.findIndex(tk => {
-        if (!passTrackCuts(tk)) return false;
-        let d = Math.abs(tk.phi0 - mu.phi0); if (d > Math.PI) d = 2*Math.PI - d;
-        return d < 0.20;
-      });
-      const muKey    = matchedI >= 0 ? `track_${matchedI}` : `muon_${muIdx}`;
       const muCharge = mu.pt >= 0 ? 1 : -1;
       pushHit(hitAreas, muKey, 'track', 'trk', mx, my, 12, mu.pt, mu.eta, mu.phi0, 0, muCharge);
     }
@@ -1057,12 +1232,12 @@ function drawTransverse(ev) {
     const BAR_MAX   = 420;
     const BAR_HW    = 6.5 * Math.PI / 180;
 
-    // Unmatched photon candidates only — ev.electrons excluded to avoid duplicates
-    const clusters_rp = (ev.photons || []).map((ph, i) => ({ ...ph, _key: `photon_${i}`, _phi: ph.phi }));
+    // All EM deposits: PhotonCollection + any ElectronCollection entries not already covered
+    const clusters_rp = mergedEmClusters(ev);
 
     for (const cl of clusters_rp) {
       if (Math.abs(cl.eta) > 2.5 || cl.pt < OBJ_PT_MIN) continue;
-      if (resolveClustrType(cl._phi, ev.tracks, cl.pt) !== 'photon') continue;  // skip electron-matched
+      if (resolveClustrType(cl._phi, cl.eta, ev.tracks, cl.pt) !== 'photon') continue;  // skip electron-matched
       const key   = cl._key, sel = isSelected(key);
       const barH  = Math.max(8, Math.min(BAR_MAX, cl.pt * BAR_SCALE));
       const rBase = D.tilOuter;
@@ -1082,7 +1257,7 @@ function drawTransverse(ev) {
       const tx = phiX(rTip, phi), ty = phiY(rTip, phi);
       if (sel) selRing(ctxRP, tx, ty, 5);
 
-      // Anonymous ET label — no particle type hint
+      // ET label — no particle type hint
       if (cl.pt > 15) {
         ctxRP.save();
         ctxRP.font = '9px sans-serif';
@@ -1095,7 +1270,6 @@ function drawTransverse(ev) {
       const rMid = rBase + barH * 0.5;
       const hx = phiX(rMid, phi), hy = phiY(rMid, phi);
       const hitR = Math.max(10, r2px(barH * 0.4));
-      // type='cluster' — user clicks [γ] in selection panel to classify
       pushHit(hitAreas, key, 'cluster', 'clu', hx, hy, hitR, cl.pt, cl.eta, phi, cl.energy, 0);
     }
   }
@@ -1103,13 +1277,11 @@ function drawTransverse(ev) {
   // ── Option A: electron-matched clusters (green), flag-gated ──────────────
   if (SHOW_ELECTRON_CLUSTERS && layers.photons) {
     const BAR_SCALE_E = 3.5, BAR_MAX_E = 420, BAR_HW_E = 6.5 * Math.PI / 180;
-    const elClusters = [
-      ...(ev.photons   || []).map((ph, i) => ({ ...ph, _phi: ph.phi, _key: `ecl_ph_${i}` })),
-      ...(ev.electrons || []).map((el, i) => ({ ...el, _phi: el.phi, _key: `ecl_el_${i}` })),
-    ];
+    // Use the same merged list (and same keys) as the yellow bars to prevent double-selection
+    const elClusters = mergedEmClusters(ev);
     for (const cl of elClusters) {
       if (Math.abs(cl.eta) > 2.5 || cl.pt < OBJ_PT_MIN) continue;
-      if (resolveClustrType(cl._phi, ev.tracks, cl.pt) !== 'electron') continue;
+      if (resolveClustrType(cl._phi, cl.eta, ev.tracks, cl.pt) !== 'electron') continue;
       const key  = cl._key, sel = isSelected(key);
       const barH = Math.max(8, Math.min(BAR_MAX_E, cl.pt * BAR_SCALE_E));
       const rBase = D.tilOuter, rTip = rBase + barH;
@@ -1123,18 +1295,10 @@ function drawTransverse(ev) {
       ctxRP.strokeStyle = sel ? COL.selected               : 'rgba(0,230,118,0.80)';
       ctxRP.lineWidth   = sel ? 1.8 : 0.9; ctxRP.fill(); ctxRP.stroke();
       if (sel) { const tx = phiX(rTip, phi), ty = phiY(rTip, phi); selRing(ctxRP, tx, ty, 5); }
-      // Clickable — charge inferred from matched track
-      const mTk = ev.tracks.find(tk => {
-        if (!passTrackCuts(tk)) return false;
-        let d = Math.abs(tk.phi0 - phi); if (d > Math.PI) d = 2*Math.PI - d;
-        return d < 0.05 && Math.abs(tk.pt) >= cl.pt * 0.40;
-      });
-      const eChg = mTk ? (mTk.pt >= 0 ? 1 : -1) : 0;
       const rMidE = rBase + barH * 0.5;
       const hxE = phiX(rMidE, phi), hyE = phiY(rMidE, phi);
       const hitRE = Math.max(10, r2px(barH * 0.4));
-      pushHit(hitAreas, key, 'ecluster', 'ecl', hxE, hyE, hitRE,
-              cl.pt, cl.eta, phi, cl.energy, eChg);
+      pushHit(hitAreas, key, 'ecluster', 'ecl', hxE, hyE, hitRE, cl.pt, cl.eta, phi, cl.energy, 0);
     }
   }
 
@@ -1210,7 +1374,7 @@ function drawLongitudinal(ev) {
   ctxLZ.fillStyle = '#000'; ctxLZ.fillRect(0, 0, csz, csz);
 
   ctxLZ.save();
-  ctxLZ.translate(cx, cy); ctxLZ.scale(zoom.lz, zoom.lz); ctxLZ.translate(-cx, -cy);
+  ctxLZ.translate(cx + pan.lz.x, cy + pan.lz.y); ctxLZ.scale(zoom.lz, zoom.lz); ctxLZ.translate(-cx, -cy);
 
   // Fill band: z1..z2 cm, r1..r2 cm (positive AND negative ρ, both sides)
   function fillBand(z1, z2, r1, r2, color) {
@@ -1354,14 +1518,15 @@ function drawLongitudinal(ev) {
       const yE   = R * Math.sin(tk.phi0);
       const zE   = (tk.z0||0) + R * cotTh;
       ctxLZ.beginPath(); ctxLZ.moveTo(toX(tk.z0||0), toY(0)); ctxLZ.lineTo(toX(zE), toY(yE));
-      ctxLZ.strokeStyle = sel ? COL.selected : trackColor(tk.pt);
+      const dptLZ = tk._displayPt ?? tk.pt;
+      ctxLZ.strokeStyle = sel ? COL.selected : trackColor(dptLZ);
       ctxLZ.lineWidth   = sel ? 1.8 : 0.55; ctxLZ.stroke();
       if (sel) selRing(ctxLZ, toX(zE), toY(yE), 5);
       const tkChargeLZ = tk.pt >= 0 ? 1 : -1;
       pushHit(hitAreasLZ, key, 'track', 'trk', toX(zE), toY(yE), 9,
-              tk.pt, tk.eta, tk.phi0, 0, tkChargeLZ);
+              dptLZ, tk.eta, tk.phi0, 0, tkChargeLZ);
       // If muon-matched and selected: extend dashed line to TILE outer
-      if (sel && resolveTrackType(tk.phi0, ev.muonTracks) === 'muon') {
+      if (sel && resolveTrackType(tk.phi0, tk.eta, ev.muonTracks) === 'muon') {
         const Rmu = D.tilOuter;
         const yMu = Rmu * Math.sin(tk.phi0);
         const zMu = (tk.z0||0) + Rmu * cotTh;
@@ -1377,11 +1542,15 @@ function drawLongitudinal(ev) {
   if (layers.muons) {
     for (const [muIdx, mu] of ev.muonTracks.entries()) {
       if (Math.abs(mu.pt) > 9990 || Math.abs(mu.pt) < OBJ_PT_MIN) continue;
-      const isMuSel = selected.some(s => {
-        let d = Math.abs((s.phi||0) - mu.phi0);
-        if (d > Math.PI) d = 2*Math.PI - d;
-        return d < 0.25;
+      // Resolve matched ID track first so selection uses the exact shared key
+      const matchedI = ev.tracks.findIndex(tk => {
+        if (!passTrackCuts(tk)) return false;
+        let dPhi = Math.abs(tk.phi0 - mu.phi0); if (dPhi > Math.PI) dPhi = 2*Math.PI - dPhi;
+        const dEta = tk.eta - mu.eta;
+        return Math.sqrt(dPhi*dPhi + dEta*dEta) < 0.20;
       });
+      const muKeyLZ  = matchedI >= 0 ? `track_${matchedI}` : `muon_${muIdx}`;
+      const isMuSel  = isSelected(muKeyLZ);  // exact key lookup — no phi-proximity false positives
       const cotTh = Math.sinh(mu.eta);
       // Use actual 3D polyline if available (ys = polylineY = rho*sin(phi) projection)
       let zE, yE;
@@ -1409,14 +1578,8 @@ function drawLongitudinal(ev) {
         ctxLZ.strokeStyle = isMuSel ? COL.selected : 'rgba(200,180,255,0.45)';
         ctxLZ.lineWidth   = isMuSel ? 2.2 : 1.0; ctxLZ.stroke();
       }
-      if (isMuSel) selRing(ctxLZ, toX(zE), toY(yE), 5);
-      // Clickable — links to matched ID track key so both views highlight together
-      const matchedI = ev.tracks.findIndex(tk => {
-        if (!passTrackCuts(tk)) return false;
-        let d = Math.abs(tk.phi0 - mu.phi0); if (d > Math.PI) d = 2*Math.PI - d;
-        return d < 0.20;
-      });
-      const muKeyLZ    = matchedI >= 0 ? `track_${matchedI}` : `muon_${muIdx}`;
+      // Only draw selRing for unmatched muons; matched ones already have an ID-track ring
+      if (isMuSel && matchedI < 0) selRing(ctxLZ, toX(zE), toY(yE), 5);
       const muChargeLZ = mu.pt >= 0 ? 1 : -1;
       pushHit(hitAreasLZ, muKeyLZ, 'track', 'trk', toX(zE), toY(yE), 12,
               mu.pt, mu.eta, mu.phi0, 0, muChargeLZ);
@@ -1447,13 +1610,13 @@ function drawLongitudinal(ev) {
     const BAR_MAX   = 420;
     const BAR_W_CM  = 16;
 
-    // Unmatched photon candidates only
-    const clusters_lz = (ev.photons || []).map((ph, i) => ({ ...ph, _key: `photon_${i}`, _phi: ph.phi }));
+    // All EM deposits: PhotonCollection + any ElectronCollection entries not already covered
+    const clusters_lz = mergedEmClusters(ev);
 
     for (const ph of clusters_lz) {
       const cotTh = Math.sinh(ph.eta);
       if (Math.abs(cotTh) > 15 || ph.pt < OBJ_PT_MIN) continue;
-      if (resolveClustrType(ph._phi, ev.tracks, ph.pt) !== 'photon') continue;  // skip electron-matched
+      if (resolveClustrType(ph._phi, ph.eta, ev.tracks, ph.pt) !== 'photon') continue;  // skip electron-matched
       const key  = ph._key, sel = isSelected(key);
       const zPh  = D.larOuter * cotTh;
       if (Math.abs(zPh) > VL) continue;
@@ -1494,7 +1657,6 @@ function drawLongitudinal(ev) {
         ctxLZ.restore();
       }
 
-      // Hit area at bar midpoint
       const mx = (sx + ex) / 2, my = (sy + ey) / 2;
       const hitR = Math.min(28, Math.max(8, blen * 0.5));
       pushHit(hitAreasLZ, key, 'cluster', 'clu', mx, my, hitR,
@@ -1505,14 +1667,12 @@ function drawLongitudinal(ev) {
   // ── Option A: electron-matched clusters (green), flag-gated ──────────────
   if (SHOW_ELECTRON_CLUSTERS && layers.photons) {
     const BAR_SCALE_E = 3.5, BAR_MAX_E = 420, BAR_W_E = 16;
-    const elClustersLZ = [
-      ...(ev.photons   || []).map((ph, i) => ({ ...ph, _phi: ph.phi, _key: `ecl_ph_${i}` })),
-      ...(ev.electrons || []).map((el, i) => ({ ...el, _phi: el.phi, _key: `ecl_el_${i}` })),
-    ];
+    // Use the same merged list (and same keys) as the yellow bars to prevent double-selection
+    const elClustersLZ = mergedEmClusters(ev);
     for (const cl of elClustersLZ) {
       const cotTh = Math.sinh(cl.eta);
       if (Math.abs(cotTh) > 15 || cl.pt < OBJ_PT_MIN) continue;
-      if (resolveClustrType(cl._phi || cl.phi, ev.tracks, cl.pt) !== 'electron') continue;
+      if (resolveClustrType(cl._phi || cl.phi, cl.eta, ev.tracks, cl.pt) !== 'electron') continue;
       const key  = cl._key, sel = isSelected(key);
       const zPh  = D.larOuter * cotTh;
       if (Math.abs(zPh) > VL) continue;
@@ -1534,16 +1694,10 @@ function drawLongitudinal(ev) {
       ctxLZ.closePath(); ctxLZ.fill(); ctxLZ.stroke();
       if (sel) selRing(ctxLZ, ex, ey, 5);
       // Clickable hit
-      const mTkLZ = ev.tracks.find(tk => {
-        if (!passTrackCuts(tk)) return false;
-        let d = Math.abs(tk.phi0 - (cl._phi||cl.phi)); if (d > Math.PI) d = 2*Math.PI - d;
-        return d < 0.05 && Math.abs(tk.pt) >= cl.pt * 0.40;
-      });
-      const eChgLZ = mTkLZ ? (mTkLZ.pt >= 0 ? 1 : -1) : 0;
       const mxE = (sx + ex) / 2, myE = (sy + ey) / 2;
       const hitRE = Math.min(28, Math.max(8, blen * 0.5));
       pushHit(hitAreasLZ, key, 'ecluster', 'ecl', mxE, myE, hitRE,
-              cl.pt, cl.eta, cl._phi || cl.phi, cl.energy, eChgLZ);
+              cl.pt, cl.eta, cl._phi || cl.phi, cl.energy, 0);
     }
   }
 
@@ -1632,40 +1786,44 @@ function updateDiscoveryPanel(ev) {
   const trkItems = (ev.tracks || [])
     .map((tk, i) => ({ ...tk, _i: i }))
     .filter(passTrackCuts)
-    .sort((a, b) => Math.abs(b.pt) - Math.abs(a.pt))
+    .sort((a, b) => Math.abs(b._displayPt ?? b.pt) - Math.abs(a._displayPt ?? a.pt))
     .slice(0, 20);
 
   fillBody('disc-track-tbody', trkItems, (tbody, tk) => {
     const key      = `track_${tk._i}`;
     const tkCharge = tk.pt >= 0 ? 1 : -1;
-    const hit      = makeHit('track', key, 'trk', tk.pt, tk.eta, tk.phi0, 0, tkCharge);
+    const dpt      = tk._displayPt ?? tk.pt;
+    const hit      = makeHit('track', key, 'trk', dpt, tk.eta, tk.phi0, 0, tkCharge);
     const sel      = isSelected(key);
     const row      = tbody.insertRow();
     row.className  = 'obj-row' + (sel ? ' obj-sel' : '');
     row.innerHTML  =
       `<td class="obj-type" style="color:${tkCharge>0?'#5cf':'#f77'}">${tkCharge>0?'+':'−'}</td>` +
-      `<td>${Math.abs(tk.pt).toFixed(1)}</td>` +
+      `<td>${Math.abs(dpt).toFixed(1)}</td>` +
       `<td>${tk.phi0.toFixed(2)}</td>` +
       `<td>${(2*Math.atan(Math.exp(-tk.eta))).toFixed(2)}</td>`;
     row.onclick = () => toggleSelect(hit);
   });
 
-  // ── Clusters — photons only (track-matched electrons shown as green eclusters)
-  const clItems = [
-    ...(ev.photons || []).map((ph, i) => ({ ...ph, _key: `photon_${i}`, _phi: ph.phi })),
-  ]
+  // ── Clusters — all EM deposits (PhotonCollection + deduplicated ElectronCollection)
+  const _allEm = mergedEmClusters(ev);
+  const clItems = _allEm
   .filter(cl => cl.pt >= OBJ_PT_MIN && Math.abs(cl.eta) <= 4)
-  .filter(cl => resolveClustrType(cl._phi, ev.tracks, cl.pt) === 'photon')
+  .map(cl => ({
+    ...cl,
+    _type: resolveClustrType(cl._phi, cl.eta, ev.tracks, cl.pt) === 'electron' ? 'ecluster' : 'cluster',
+  }))
   .sort((a, b) => b.pt - a.pt);
 
   fillBody('disc-clust-tbody', clItems, (tbody, cl) => {
     const key = cl._key;
-    const hit = makeHit('cluster', key, 'clu', cl.pt, cl.eta, cl._phi, cl.energy, 0);
+    const hit = makeHit(cl._type, key, 'clu', cl.pt, cl.eta, cl._phi, cl.energy, 0);
     const sel = isSelected(key);
     const row = tbody.insertRow();
     row.className = 'obj-row' + (sel ? ' obj-sel' : '');
+    const color = cl._type === 'ecluster' ? '#00e676' : '#ffd600';
     row.innerHTML =
-      `<td class="obj-type" style="color:#ffd600">◆</td>` +
+      `<td class="obj-type" style="color:${color}">◆</td>` +
       `<td>${cl.pt.toFixed(1)}</td>` +
       `<td>${cl._phi.toFixed(2)}</td>` +
       `<td>${(2*Math.atan(Math.exp(-cl.eta))).toFixed(2)}</td>`;
@@ -1717,17 +1875,18 @@ function updateTrackTable(ev) {
   tbody.innerHTML = '';
   const tks = (ev.tracks||[])
     .filter(passTrackCuts)
-    .sort((a,b) => Math.abs(b.pt)-Math.abs(a.pt))
+    .sort((a,b) => Math.abs(b._displayPt ?? b.pt) - Math.abs(a._displayPt ?? a.pt))
     .slice(0, 15);
   for (const [i,tk] of tks.entries()) {
-    const p     = Math.abs(tk.pt) * Math.cosh(tk.eta);
+    const dpt   = tk._displayPt ?? tk.pt;
+    const p     = Math.abs(dpt) * Math.cosh(tk.eta);
     const theta = Math.PI/2 - Math.atan(Math.abs(Math.sinh(tk.eta)));
     const row   = tbody.insertRow();
     row.innerHTML =
       `<td>Track_${i+1}</td>` +
       `<td style="color:${tk.pt>=0?'#5cf':'#f77'}">${tk.pt>=0?'+':'−'}</td>` +
       `<td>${p.toFixed(2)}</td>` +
-      `<td>${Math.abs(tk.pt).toFixed(2)}</td>` +
+      `<td>${Math.abs(dpt).toFixed(2)}</td>` +
       `<td>${tk.phi0.toFixed(2)}</td>` +
       `<td>${theta.toFixed(2)}</td>`;
   }
@@ -1736,18 +1895,34 @@ function updateTrackTable(ev) {
 // ════════════════════════════════════════════════
 //  NAVIGATION
 // ════════════════════════════════════════════════
+let isNavigating = false;  // prevents concurrent go() calls racing on idx
+
 async function go(delta) {
+  if (isNavigating) return;          // drop the call if already mid-navigation
+  if (!eventsBase) return;           // group not yet chosen (overlay is open)
   const nxt = idx + delta;
   if (nxt < 0 || nxt >= N_EVENTS) return;
-  idx = nxt;
-  selected = []; updateSelectionPanel();
-  const ld = document.getElementById('loading');
-  ld.style.display = 'block';
-  try { data = await loadEvent(idx); render(); updateUI(data); }
-  catch(e) { console.error(e); }
-  ld.style.display = 'none';
-  if (idx+1 < N_EVENTS) loadEvent(idx+1).catch(()=>{});
-  if (idx-1 >= 0)       loadEvent(idx-1).catch(()=>{});
+  // Check application state directly (not DOM) — DOM can lag or be stale
+  const canRecord = selected.length >= 2
+                 && chargesValid(selected).valid
+                 && isCompleteChannel(selected);
+  if (canRecord) {
+    if (!confirm('You have an unrecorded measurement. Leave this event without recording?')) return;
+  }
+  isNavigating = true;
+  try {
+    idx = nxt;
+    selected = []; updateSelectionPanel();
+    const ld = document.getElementById('loading');
+    ld.style.display = 'block';
+    try { data = await loadEvent(idx); render(); updateUI(data); }
+    catch(e) { console.error(e); }
+    ld.style.display = 'none';
+    if (idx+1 < N_EVENTS) loadEvent(idx+1).catch(()=>{});
+    if (idx-1 >= 0)       loadEvent(idx-1).catch(()=>{});
+  } finally {
+    isNavigating = false;
+  }
 }
 
 // ════════════════════════════════════════════════
@@ -1794,12 +1969,29 @@ async function go(delta) {
 //  INPUT: KEYBOARD, POINTER, ZOOM
 // ════════════════════════════════════════════════
 document.addEventListener('keydown', e => {
+  // Don't steal arrow keys from inputs/selects, and don't fire when overlay is open
+  const tag = e.target.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  if (!eventsBase) return;
   if (e.key==='ArrowRight'||e.key==='ArrowDown') go(+1);
   if (e.key==='ArrowLeft' ||e.key==='ArrowUp')   go(-1);
 });
 
+function stepZoom(key, factor) {
+  // factor=0 resets; otherwise multiplies current zoom
+  zoom[key] = factor === 0 ? 1.0 : Math.max(0.4, Math.min(16, zoom[key] * factor));
+  if (factor === 0) { pan[key].x = 0; pan[key].y = 0; }
+  render();
+}
+
 function attachPointerHandlers(canvas, zoomKey) {
-  let pStart = null, pinchDist = 0;
+  let pStart = null, pinchDist = 0, lastDrag = null, isDragging = false;
+
+  // Helper: convert raw canvas coords → world coords (accounts for zoom + pan)
+  function toWorld(rawX, rawY) {
+    const cx = csz / 2, z = zoom[zoomKey], p = pan[zoomKey];
+    return { x: (rawX - p.x - cx) / z + cx, y: (rawY - p.y - cx) / z + cx };
+  }
 
   canvas.addEventListener('wheel', e => {
     e.preventDefault();
@@ -1808,7 +2000,7 @@ function attachPointerHandlers(canvas, zoomKey) {
     render();
   }, { passive: false });
 
-  canvas.addEventListener('dblclick', () => { zoom[zoomKey] = 1.0; render(); });
+  canvas.addEventListener('dblclick', () => { zoom[zoomKey] = 1.0; pan[zoomKey].x = 0; pan[zoomKey].y = 0; render(); });
 
   canvas.addEventListener('touchstart', e => {
     if (e.touches.length === 2) {
@@ -1831,49 +2023,68 @@ function attachPointerHandlers(canvas, zoomKey) {
 
   canvas.addEventListener('touchend', () => { pinchDist = 0; }, { passive: true });
 
+  canvas.addEventListener('pointercancel', () => {
+    pStart = null; lastDrag = null; isDragging = false;
+    canvas.style.cursor = zoom[zoomKey] > 1.05 ? 'grab' : 'default';
+  }, { passive: true });
+
   canvas.addEventListener('pointerdown', e => {
-    pStart = { x: e.clientX, y: e.clientY };
+    if (!e.isPrimary) return;   // ignore non-primary pointers (second finger, etc.)
+    pStart   = { x: e.clientX, y: e.clientY };
+    lastDrag = { x: e.clientX, y: e.clientY };
+    isDragging = false;
+  }, { passive: true });
+
+  canvas.addEventListener('pointermove', e => {
+    if (pStart) {
+      const dx = e.clientX - pStart.x, dy = e.clientY - pStart.y;
+      if (!isDragging && Math.sqrt(dx*dx + dy*dy) > 5) isDragging = true;
+      if (isDragging) {
+        // Drag-to-pan
+        const scale = csz / canvas.getBoundingClientRect().width;
+        pan[zoomKey].x += (e.clientX - lastDrag.x) * scale;
+        pan[zoomKey].y += (e.clientY - lastDrag.y) * scale;
+        lastDrag = { x: e.clientX, y: e.clientY };
+        canvas.style.cursor = 'grabbing';
+        render();
+      }
+      return;
+    }
+    // Hover — highlight hit areas
+    const areas = (zoomKey === 'rp') ? hitAreas : hitAreasLZ;
+    const rect  = canvas.getBoundingClientRect();
+    const rawX  = (e.clientX - rect.left) * (csz / rect.width);
+    const rawY  = (e.clientY - rect.top)  * (csz / rect.height);
+    const { x: mx, y: my } = toWorld(rawX, rawY);
+    canvas.style.cursor = areas.some(a => (mx-a.x)**2+(my-a.y)**2 <= a.r**2)
+      ? 'pointer' : zoom[zoomKey] > 1.05 ? 'grab' : 'default';
   }, { passive: true });
 
   canvas.addEventListener('pointerup', e => {
     if (!pStart) return;
     const dx = e.clientX - pStart.x, dy = e.clientY - pStart.y;
     const dist = Math.sqrt(dx*dx + dy*dy);
-    pStart = null;
+    const wasDragging = isDragging;
+    pStart = null; lastDrag = null; isDragging = false;
+    canvas.style.cursor = zoom[zoomKey] > 1.05 ? 'grab' : 'default';
 
-    if (dist < 12) {
-      // Tap — hit test with zoom-aware coordinates
+    if (!wasDragging && dist < 12) {
+      // Tap/click — hit test
       const areas = (zoomKey === 'rp') ? hitAreas : hitAreasLZ;
-      const z = zoom[zoomKey];
-      const rect = canvas.getBoundingClientRect();
-      const cx   = csz / 2;
-      const rawX = (e.clientX - rect.left) * (csz / rect.width);
-      const rawY = (e.clientY - rect.top)  * (csz / rect.height);
-      const mx   = (rawX - cx) / z + cx;
-      const my   = (rawY - cx) / z + cx;
+      const rect  = canvas.getBoundingClientRect();
+      const rawX  = (e.clientX - rect.left) * (csz / rect.width);
+      const rawY  = (e.clientY - rect.top)  * (csz / rect.height);
+      const { x: mx, y: my } = toWorld(rawX, rawY);
       let best = null, bestD2 = Infinity;
       for (const a of areas) {
         const d2 = (mx-a.x)**2 + (my-a.y)**2;
         if (d2 <= a.r**2 && d2 < bestD2) { best=a; bestD2=d2; }
       }
       if (best) toggleSelect(best);
-    } else if (e.pointerType === 'touch' && Math.abs(dx) > 45) {
+    } else if (!wasDragging && e.pointerType === 'touch' && Math.abs(dx) > 45 && zoom[zoomKey] < 1.2) {
+      // Swipe to navigate — only at default zoom
       go(dx < 0 ? +1 : -1);
     }
-  }, { passive: true });
-
-  canvas.addEventListener('pointermove', e => {
-    if (pStart) return;
-    const areas = (zoomKey === 'rp') ? hitAreas : hitAreasLZ;
-    const z = zoom[zoomKey];
-    const cx  = csz / 2;
-    const rect = canvas.getBoundingClientRect();
-    const rawX = (e.clientX - rect.left) * (csz / rect.width);
-    const rawY = (e.clientY - rect.top)  * (csz / rect.height);
-    const mx = (rawX - cx) / z + cx;
-    const my = (rawY - cx) / z + cx;
-    canvas.style.cursor = areas.some(a => (mx-a.x)**2+(my-a.y)**2 <= a.r**2)
-      ? 'pointer' : 'default';
   }, { passive: true });
 }
 
@@ -1937,6 +2148,8 @@ function setupGroupSelector(manifest) {
 }
 
 function changeGroup() {
+  console.warn('[DEBUG] changeGroup() called — stack trace:');
+  console.trace();
   cache = {}; idx = 0; data = null; eventsBase = null;
   document.getElementById('group-overlay').style.display = 'flex';
 }
