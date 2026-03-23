@@ -1162,17 +1162,32 @@ function classifySelected(key, newType) {
 // ════════════════════════════════════════════════
 //  TYPE RESOLUTION HELPERS  (used by canvas draw + Discovery panel)
 // ════════════════════════════════════════════════
-// Return 'electron' if any passing ID track is within ΔR < 0.1 of the cluster; else 'photon'
+// Return 'electron' if any track within ΔR < 0.1 passes the *matching* cuts; else 'photon'.
+// Matching cuts are intentionally looser than the display cuts (passTrackCuts):
+//  - d0/z0 and pT ratio guard against accidental soft/displaced coincidences
+//  - NO TRT requirement: bremsstrahlung electrons and near-endcap tracks legitimately have 0 TRT hits
+//  - nPix >= 1, nSCT >= 4: minimal confirmation the track originates from the IP
+function passMatchCuts(tk, clPt) {
+  if (Math.abs(tk.pt)    < trackCuts.minPt)  return false;
+  if (Math.abs(tk.eta)   > trackCuts.maxEta) return false;
+  if (Math.abs(tk.d0||0) > trackCuts.maxD0)  return false;
+  if (Math.abs(tk.z0||0) > trackCuts.maxZ0)  return false;
+  if (clPt > 0 && Math.abs(tk.pt) < clPt * 0.25)  return false;
+  // Loose hit requirements — skip if unavailable (< 0)
+  if (tk.nPixHits >= 0 && tk.nPixHits < 1) return false;
+  if (tk.nSCTHits >= 0 && tk.nSCTHits < 4) return false;
+  // No TRT cut: bremsstrahlung electrons may leave 0 TRT hits even inside acceptance
+  return true;
+}
+
 function resolveClustrType(phi, eta, tracks, clPt = 0) {
   const DR_MAX = 0.1;
   for (const tk of (tracks || [])) {
-    if (!passTrackCuts(tk)) continue;
-    if (clPt > 0 && Math.abs(tk.pt) < clPt * 0.25) continue;
+    if (!passMatchCuts(tk, clPt)) continue;
     let dPhi = Math.abs(tk.phi0 - phi);
     if (dPhi > Math.PI) dPhi = 2*Math.PI - dPhi;
     const dEta = tk.eta - eta;
-    const dR = Math.sqrt(dPhi*dPhi + dEta*dEta);
-    if (dR < DR_MAX) return 'electron';
+    if (Math.sqrt(dPhi*dPhi + dEta*dEta) < DR_MAX) return 'electron';
   }
   return 'photon';
 }
