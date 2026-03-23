@@ -210,6 +210,10 @@ const MUON_MASS = 0.10566;  // GeV/c²
 // Feature flags — set false to hide feature without removing code
 const ENABLE_JETS = false;  // set true to re-enable jet display & toggle button
 
+// Debug mode — activate with ?debug in URL (not shown to students)
+const DEBUG = (typeof URLSearchParams !== 'undefined')
+  && new URLSearchParams(window.location.search).has('debug');
+
 // ATLAS detector geometry (cm) — from AGeometry.xml / AMuonGeometry.xml
 const D = {
   beamPipe : 3,
@@ -371,7 +375,9 @@ function passTrackCuts(tk) {
   // Hit cuts: skip if hit count unavailable (< 0)
   if (trackCuts.usePixHits && tk.nPixHits >= 0 && tk.nPixHits < trackCuts.minPixHits) return false;
   if (trackCuts.useSCTHits && tk.nSCTHits >= 0 && tk.nSCTHits < trackCuts.minSCTHits) return false;
-  if (trackCuts.useTRTHits && tk.nTRTHits >= 0 && tk.nTRTHits < trackCuts.minTRTHits) return false;
+  // TRT only covers |η| < 2.0; forward tracks legitimately have 0 TRT hits — skip the cut there
+  if (trackCuts.useTRTHits && Math.abs(tk.eta) < 2.0 &&
+      tk.nTRTHits >= 0 && tk.nTRTHits < trackCuts.minTRTHits) return false;
   return true;
 }
 
@@ -433,7 +439,7 @@ function parseTracks(el) {
   return tracks;
 }
 
-function parseParticles(el) {
+function parseParticles(el, includeAll = false) {
   if (!el) return [];
   const count  = parseInt(el.getAttribute('count')) || 0;
   const pt     = floats(child(el, 'pt'));
@@ -445,10 +451,12 @@ function parseParticles(el) {
   const result = [];
   for (let i = 0; i < count && i < pt.length; i++) {
     const quality = isEMs[i] || '';
-    if (quality === 'none') continue;  // skip reconstruction failures
+    const filtered = (quality === 'none');
+    if (!includeAll && filtered) continue;  // skip reconstruction failures
     result.push({
       pt: pt[i]||0, eta: eta[i]||0, phi: phi[i]||0,
-      energy: energy[i]||0, pdgId: pdgId[i]||0, quality
+      energy: energy[i]||0, pdgId: pdgId[i]||0, quality,
+      ...(includeAll && { _rawIdx: i, _filtered: filtered })
     });
   }
   return result;
@@ -543,6 +551,8 @@ function parseEvent(xmlText) {
   const muonTracks = parseTracks(findEl(root,'Track','MuonSpectrometerTracks'));
   const electrons  = parseElectrons(findEl(root,'Electron','ElectronCollection'));
   const photons    = parseParticles(findEl(root,'Photon','PhotonCollection'));
+  // Raw collections for debug panel (only populated when ?debug is active)
+  const photonsRaw = DEBUG ? parseParticles(findEl(root,'Photon','PhotonCollection'), true) : [];
   // StacoMuonCollection preferred (has pdgId/charge); fall back to Muons or CombinedFitMuons
   const muonObjs   = parseMuons(
     findEl(root,'Muon','StacoMuonCollection') ||
@@ -622,7 +632,7 @@ function parseEvent(xmlText) {
   }
 
   return {
-    meta, tracks, muonTracks, electrons, photons, jets, met, lar, tile, fcal,
+    meta, tracks, muonTracks, electrons, photons, photonsRaw, jets, met, lar, tile, fcal,
     larBins  : phiBins(lar.energy,  lar.phi,  PHI_BINS, 0.5),  // was 0.15 — cut sub-threshold noise
     tilBins  : phiBins(tile.energy, tile.phi, PHI_BINS, 0.3),  // was 0.05
     fcalBins : phiBins(fcal.energy, fcal.phi, PHI_BINS, 0.3),  // was 0.10
@@ -1062,7 +1072,7 @@ function updateSelectionPanel() {
       if (recordBtn) {
         recordBtn.style.display  = 'inline-block';
         recordBtn.disabled       = false;
-        recordBtn.textContent    = '⊕ Record';
+        recordBtn.textContent    = t('btn.record');
       }
     } else {
       // Partial but charge-valid — show hint, no record yet
@@ -1157,7 +1167,7 @@ function resolveClustrType(phi, eta, tracks, clPt = 0) {
   const DR_MAX = 0.1;
   for (const tk of (tracks || [])) {
     if (!passTrackCuts(tk)) continue;
-    if (clPt > 0 && Math.abs(tk.pt) < clPt * 0.40) continue;
+    if (clPt > 0 && Math.abs(tk.pt) < clPt * 0.25) continue;
     let dPhi = Math.abs(tk.phi0 - phi);
     if (dPhi > Math.PI) dPhi = 2*Math.PI - dPhi;
     const dEta = tk.eta - eta;
@@ -1201,11 +1211,32 @@ function pushHit(arr, key, type, label, x, y, r, pt, eta, phi, energy, charge) {
 }
 
 // Build EM-cluster list from PhotonCollection only (quality-filtered by ATLAS reconstruction).
-// ElectronCollection entries are intentionally excluded here — they appear via their associated
-// inner-detector tracks (annotated with _elEnergy/_displayPt at parse time).  Including raw
-// ElectronCollection clusters produced spurious extra entries (e.g. event003: 5 vs 2 in HYPATIA).
+// Build EM-cluster list: PhotonCollection + ElectronCollection entries that have
+// a matching ID track within ΔR < 0.2 (confirming they are real e± deposits).
+// Unmatched ElectronCollection entries (no nearby track) are excluded — these were
+// the spurious extra clusters seen in event003/033.
+// ElectronCollection entries already within ΔR < 0.1 of a photon are also dropped
+// to avoid double-counting when the same cluster appears in both collections.
 function mergedEmClusters(ev) {
-  return (ev.photons || []).map((ph, i) => ({ ...ph, _key: `photon_${i}`, _phi: ph.phi }));
+  const photons = (ev.photons || []).map((ph, i) => ({ ...ph, _key: `photon_${i}`, _phi: ph.phi }));
+  const tracks  = ev.tracks || [];
+  const extra   = (ev.electrons || []).filter(el => {
+    // Drop if a photon entry already covers this cluster
+    const nearPhoton = photons.some(ph => {
+      let dPhi = Math.abs(ph._phi - el.phi);
+      if (dPhi > Math.PI) dPhi = 2*Math.PI - dPhi;
+      return Math.sqrt(dPhi*dPhi + (ph.eta - el.eta)**2) < 0.1;
+    });
+    if (nearPhoton) return false;
+    // Only include if at least one ID track is nearby (ΔR < 0.2) — no quality cuts,
+    // just confirming a charged particle produced this deposit
+    return tracks.some(tk => {
+      let dPhi = Math.abs(tk.phi0 - el.phi);
+      if (dPhi > Math.PI) dPhi = 2*Math.PI - dPhi;
+      return Math.sqrt(dPhi*dPhi + (tk.eta - el.eta)**2) < 0.2;
+    });
+  }).map((el, i) => ({ ...el, _key: `ecl_el_ym_${i}`, _phi: el.phi }));
+  return [...photons, ...extra];
 }
 
 // ════════════════════════════════════════════════
@@ -1866,19 +1897,20 @@ function drawLongitudinal(ev) {
       if (Math.abs(cotTh) > 15 || ph.pt < OBJ_PT_MIN) continue;
       if (resolveClustrType(ph._phi, ph.eta, ev.tracks, ph.pt) !== 'photon') continue;  // skip electron-matched
       const key  = ph._key, sel = isSelected(key);
-      const zPh  = D.larOuter * cotTh;
-      if (Math.abs(zPh) > VL) continue;
+      const zS   = D.larOuter * cotTh;                       // z at LAr outer cylinder
+      const yS   = D.larOuter * Math.sin(ph._phi);           // Cartesian y (z-y view)
+      if (Math.abs(zS) > VL || Math.abs(yS) > VL) continue;
       const barH = Math.max(8, Math.min(BAR_MAX, ph.pt * BAR_SCALE));
 
-      // Radial bar: starts at LAr outer face, points away from IP along (sinθ, cosθ) in (ρ,z)
-      const sinT = 1 / Math.cosh(ph.eta);   // sin(polar angle) — always positive
-      const cosT = Math.tanh(ph.eta);        // cos(polar angle) — sign follows η
-      const rS = D.larOuter, zS = zPh;
-      const rE = rS + barH * sinT, zE = zS + barH * cosT;
+      // Bar direction in z-y space: dz = tanh(η), dy = sin(φ)/cosh(η)
+      const cosT   = Math.tanh(ph.eta);
+      const sinT_y = Math.sin(ph._phi) / Math.cosh(ph.eta);
+      const zE = zS + barH * cosT;
+      const yE = yS + barH * sinT_y;
 
       // Canvas start/end (sc = pixels/cm, toX/toY are affine)
-      const sx = toX(zS), sy = toY(rS);
-      const ex = toX(zE), ey = toY(rE);
+      const sx = toX(zS), sy = toY(yS);
+      const ex = toX(zE), ey = toY(yE);
       const dxB = ex - sx, dyB = ey - sy;
       const blen = Math.sqrt(dxB*dxB + dyB*dyB) || 1;
       const hwPx = Math.max(2, toPx(BAR_W_CM) / 2);
@@ -1922,13 +1954,16 @@ function drawLongitudinal(ev) {
       if (Math.abs(cotTh) > 15 || cl.pt < OBJ_PT_MIN) continue;
       if (resolveClustrType(cl._phi || cl.phi, cl.eta, ev.tracks, cl.pt) !== 'electron') continue;
       const key  = cl._key, sel = isSelected(key);
-      const zPh  = D.larOuter * cotTh;
-      if (Math.abs(zPh) > VL) continue;
+      const clPhi = cl._phi || cl.phi;
+      const zS   = D.larOuter * cotTh;                       // z at LAr outer cylinder
+      const yS   = D.larOuter * Math.sin(clPhi);             // Cartesian y (z-y view)
+      if (Math.abs(zS) > VL || Math.abs(yS) > VL) continue;
       const barH   = Math.max(8, Math.min(BAR_MAX_E, cl.pt * BAR_SCALE_E));
-      const sinT   = 1 / Math.cosh(cl.eta), cosT = Math.tanh(cl.eta);
-      const rS = D.larOuter, zS = zPh;
-      const rE = rS + barH * sinT, zE = zS + barH * cosT;
-      const sx = toX(zS), sy = toY(rS), ex = toX(zE), ey = toY(rE);
+      const cosT   = Math.tanh(cl.eta);
+      const sinT_y = Math.sin(clPhi) / Math.cosh(cl.eta);
+      const zE = zS + barH * cosT;
+      const yE = yS + barH * sinT_y;
+      const sx = toX(zS), sy = toY(yS), ex = toX(zE), ey = toY(yE);
       const dxB = ex - sx, dyB = ey - sy;
       const blen = Math.sqrt(dxB*dxB + dyB*dyB) || 1;
       const hwPx = Math.max(2, toPx(BAR_W_E) / 2);
@@ -1998,6 +2033,197 @@ function drawLongitudinal(ev) {
 }
 
 // ════════════════════════════════════════════════
+//  DEBUG PANEL  (only active with ?debug URL param)
+// ════════════════════════════════════════════════
+function updateDebugPanel(ev) {
+  if (!DEBUG) return;
+  const panel = document.getElementById('debug-panel');
+  if (!panel || !ev) return;
+
+  const f2 = n => (+(n||0)).toFixed(2);
+  const f3 = n => (+(n||0)).toFixed(3);
+  const dR = (e1,p1,e2,p2) => { let dp=Math.abs(p1-p2); if(dp>Math.PI) dp=2*Math.PI-dp; return Math.sqrt(dp*dp+(e1-e2)**2); };
+
+  // ── EM clusters ──────────────────────────────────────────────────────────
+  // What mergedEmClusters produces (same logic, same keys)
+  const merged = mergedEmClusters(ev);
+
+  // Helper: find closest passing track and closest any-track
+  function trackMatch(eta, phi, thresh) {
+    let bestPass={dr:99,tk:null}, bestAny={dr:99,tk:null};
+    ev.tracks.forEach((tk,i) => {
+      const d = dR(eta,phi,tk.eta,tk.phi0);
+      if (d < bestAny.dr) bestAny = {dr:d, tk, i};
+      if (passTrackCuts(tk) && d < bestPass.dr) bestPass = {dr:d, tk, i};
+    });
+    return { bestPass, bestAny };
+  }
+
+  let emRows = '';
+
+  // Build a map: raw photon index → index in ev.photons (filtered array)
+  // mergedEmClusters keys photons by their index in ev.photons, not the raw index
+  const rawToFilteredIdx = new Map();
+  { let fi = 0;
+    (ev.photonsRaw || []).forEach(ph => {
+      if (!ph._filtered) { rawToFilteredIdx.set(ph._rawIdx, fi); fi++; }
+    });
+  }
+
+  // PhotonCollection (raw — includes isEM=none entries)
+  (ev.photonsRaw || []).forEach((ph, idx) => {
+    const filteredIdx = rawToFilteredIdx.get(ph._rawIdx);
+    const inMerged    = (filteredIdx != null) && merged.some(c => c._key === `photon_${filteredIdx}`);
+    const type        = inMerged ? resolveClustrType(ph.phi, ph.eta, ev.tracks, ph.pt) : null;
+    const {bestPass, bestAny} = trackMatch(ph.eta, ph.phi, 0.2);
+    const passNote = bestPass.dr < 0.1
+      ? `tk[${bestPass.i}] ΔR=${bestPass.dr.toFixed(3)} pt=${f2(bestPass.tk.pt)}`
+      : bestPass.dr < 99 ? `nearest pass tk[${bestPass.i}] ΔR=${bestPass.dr.toFixed(3)}`
+      : 'no pass track';
+    const anyNote = (bestAny.dr < 0.2 && bestAny.i !== bestPass.i)
+      ? `; raw tk[${bestAny.i}] ΔR=${bestAny.dr.toFixed(3)} pt=${f2(bestAny.tk.pt)} nPix=${bestAny.tk.nPixHits} nSCT=${bestAny.tk.nSCTHits} nTRT=${bestAny.tk.nTRTHits}`
+      : '';
+    const colour = type === 'electron' ? '🟢' : type === 'photon' ? '🟡' : ph._filtered ? '🚫' : '—';
+    emRows += `<tr class="${ph._filtered ? 'dbg-dim' : ''}">
+      <td>γ[${ph._rawIdx}]</td>
+      <td>${f2(ph.pt)}</td><td>${f3(ph.eta)}</td><td>${f3(ph.phi)}</td>
+      <td>${ph.quality||'—'}</td>
+      <td>${inMerged ? 'yes' : ph._filtered ? '<b>filtered</b>' : 'no track'}</td>
+      <td>${colour} ${type||( ph._filtered ? 'dropped' : '—')}</td>
+      <td class="dbg-note">${passNote}${anyNote}</td></tr>`;
+  });
+
+  // ElectronCollection
+  ev.electrons.forEach((el, idx) => {
+    const inMerged = merged.some(c => c._phi === el.phi && Math.abs(c.eta - el.eta) < 0.001);
+    const type     = inMerged ? resolveClustrType(el.phi, el.eta, ev.tracks, el.pt) : null;
+    const {bestPass, bestAny} = trackMatch(el.eta, el.phi, 0.2);
+    // Why not green? Enumerate closest tracks within ΔR<0.15 and their fail reason
+    let whyNote = '';
+    if (type === 'photon' || !inMerged) {
+      const candidates = ev.tracks.map((tk,i)=>({tk,i,dr:dR(el.eta,el.phi,tk.eta,tk.phi0)}))
+        .filter(x=>x.dr<0.15).sort((a,b)=>a.dr-b.dr).slice(0,3);
+      whyNote = candidates.map(x => {
+        const fails = [];
+        if (Math.abs(x.tk.pt) < trackCuts.minPt) fails.push(`pt=${f2(x.tk.pt)}<${trackCuts.minPt}`);
+        if (x.tk.nPixHits >= 0 && x.tk.nPixHits < trackCuts.minPixHits) fails.push(`nPix=${x.tk.nPixHits}`);
+        if (x.tk.nSCTHits >= 0 && x.tk.nSCTHits < trackCuts.minSCTHits) fails.push(`nSCT=${x.tk.nSCTHits}`);
+        if (trackCuts.useTRTHits && Math.abs(x.tk.eta) < 2.0 &&
+            x.tk.nTRTHits >= 0 && x.tk.nTRTHits < trackCuts.minTRTHits) fails.push(`nTRT=${x.tk.nTRTHits}`);
+        const pass = !fails.length;
+        return `tk[${x.i}] ΔR=${x.dr.toFixed(3)} ${pass?'✓':fails.join(',')}`;
+      }).join(' | ') || 'no track <0.15';
+    } else {
+      whyNote = bestPass.dr < 99
+        ? `tk[${bestPass.i}] ΔR=${bestPass.dr.toFixed(3)} pt=${f2(bestPass.tk.pt)}`
+        : '';
+    }
+    const colour = type === 'electron' ? '🟢' : type === 'photon' ? '🟡' : '—';
+    emRows += `<tr>
+      <td>e[${idx}]</td>
+      <td>${f2(el.pt)}</td><td>${f3(el.eta)}</td><td>${f3(el.phi)}</td>
+      <td>tIdx=${el.trackIndex}</td>
+      <td>${inMerged ? 'yes' : 'no track <0.2'}</td>
+      <td>${colour} ${type||'—'}</td>
+      <td class="dbg-note">${whyNote}</td></tr>`;
+  });
+
+  // ── Passing ID tracks ─────────────────────────────────────────────────────
+  const nTotal  = ev.tracks.length;
+  const muTracks = ev.muonTracks || [];
+
+  // For each MS track, find the closest passing ID track (ΔR < 0.2)
+  // so we can cross-reference in both tables
+  function closestIdTrack(msPhi, msEta) {
+    let best = { dr: 99, i: -1 };
+    ev.tracks.forEach((tk, i) => {
+      if (!passTrackCuts(tk)) return;
+      const d = dR(msEta, msPhi, tk.eta, tk.phi0);
+      if (d < best.dr) best = { dr: d, i };
+    });
+    return best;
+  }
+
+  let tkRows = '';
+  ev.tracks.forEach((tk, i) => {
+    if (!passTrackCuts(tk)) return;
+    // Closest EM cluster
+    let bestCl = {dr:99, cl:null};
+    merged.forEach(c => {
+      const d = dR(tk.eta, tk.phi0, c.eta, c._phi||c.phi);
+      if (d < bestCl.dr) bestCl = {dr:d, cl:c};
+    });
+    const clNote = bestCl.dr < 0.3
+      ? `→ ${bestCl.cl._key} ΔR=${bestCl.dr.toFixed(3)}`
+      : '';
+    // Closest MS segment
+    let bestMs = {dr:99, j:-1};
+    muTracks.forEach((mu, j) => {
+      const d = dR(tk.eta, tk.phi0, mu.eta, mu.phi0);
+      if (d < bestMs.dr) bestMs = {dr:d, j};
+    });
+    const muNote = bestMs.dr < 0.2 ? `🟣 MS[${bestMs.j}] ΔR=${bestMs.dr.toFixed(3)}` : '';
+    const dpt = tk._displayPt != null ? ` (disp ${f2(tk._displayPt)})` : '';
+    tkRows += `<tr>
+      <td>${i}</td>
+      <td>${f2(tk.pt)}${dpt}</td><td>${f3(tk.eta)}</td><td>${f3(tk.phi0)}</td>
+      <td>${tk.nPixHits}/${tk.nSCTHits}/${tk.nTRTHits}</td>
+      <td>${f2(tk.d0||0)} / ${f2(tk.z0||0)}</td>
+      <td class="dbg-note">${muNote || clNote}</td></tr>`;
+  });
+  const nPass = ev.tracks.filter(passTrackCuts).length;
+
+  // ── MS tracks (muon spectrometer segments) ────────────────────────────────
+  let muRows = '';
+  muTracks.forEach((mu, j) => {
+    const isTiny = Math.abs(mu.pt) < OBJ_PT_MIN && mu.pt !== 9999;
+    const dispPt  = mu._displayPt != null ? mu._displayPt : mu.pt;
+    const ptStr   = Math.abs(mu.pt) > 9000
+      ? `9999→${f2(dispPt)}`          // sentinel, annotated with combined pT
+      : f2(mu.pt);
+    const idMatch = closestIdTrack(mu.phi0, mu.eta);
+    const idNote  = idMatch.dr < 0.2
+      ? `ID[${idMatch.i}] ΔR=${idMatch.dr.toFixed(3)}`
+      : 'no ID match';
+    muRows += `<tr class="${isTiny ? 'dbg-dim' : ''}">
+      <td>${j}</td>
+      <td>${ptStr}</td><td>${f3(mu.eta)}</td><td>${f3(mu.phi0)}</td>
+      <td class="dbg-note">${idNote}</td></tr>`;
+  });
+  if (!muRows) muRows = '<tr><td colspan="5" style="opacity:.4;text-align:center">none</td></tr>';
+
+  const evStr = `${ev.meta.run} / ${ev.meta.evNum}`;
+  panel.innerHTML = `
+    <div class="dbg-hdr">🔬 DEBUG — run/evt ${evStr}
+      &nbsp;<span class="dbg-dim">tracks: ${nPass}/${nTotal} pass cuts</span>
+      &nbsp;<span class="dbg-dim">photons: ${ev.photons.length} (${(ev.photonsRaw||[]).length} raw)</span>
+      &nbsp;<span class="dbg-dim">electrons: ${ev.electrons.length}</span>
+      &nbsp;<span class="dbg-dim">merged clusters: ${merged.length}</span>
+      &nbsp;<span class="dbg-dim">MS segs: ${muTracks.length}</span>
+    </div>
+    <div class="dbg-cols">
+      <div class="dbg-sec">
+        <b>EM clusters</b>
+        <table class="dbg-tbl"><thead><tr>
+          <th>src</th><th>pt</th><th>η</th><th>φ</th><th>isEM/tIdx</th><th>merged?</th><th>colour</th><th>track notes</th>
+        </tr></thead><tbody>${emRows}</tbody></table>
+      </div>
+      <div class="dbg-sec">
+        <b>Passing ID tracks</b> (nPix/nSCT/nTRT, d0/z0)
+        <table class="dbg-tbl"><thead><tr>
+          <th>#</th><th>pt</th><th>η</th><th>φ</th><th>hits</th><th>d0/z0</th><th>match</th>
+        </tr></thead><tbody>${tkRows}</tbody></table>
+      </div>
+      <div class="dbg-sec" style="flex: 0 0 auto; min-width: 180px; max-width: 260px;">
+        <b>MS segments</b> (🟣 = muon candidate)
+        <table class="dbg-tbl"><thead><tr>
+          <th>#</th><th>pt</th><th>η</th><th>φ</th><th>ID match</th>
+        </tr></thead><tbody>${muRows}</tbody></table>
+      </div>
+    </div>`;
+}
+
+// ════════════════════════════════════════════════
 //  RENDER
 // ════════════════════════════════════════════════
 function render() {
@@ -2008,10 +2234,37 @@ function render() {
 }
 
 // ════════════════════════════════════════════════
+//  SCROLL-OVERFLOW FADE INDICATOR
+// ════════════════════════════════════════════════
+// Adds/removes .has-overflow and .at-bottom on each .obj-section so the
+// CSS ::after gradient fades in when content overflows, and fades out when
+// the user has scrolled to the bottom.
+function refreshScrollFades() {
+  document.querySelectorAll('.obj-section').forEach(sec => {
+    const scroller = sec.querySelector('.table-scroll');
+    if (!scroller) return;
+    const overflows = scroller.scrollHeight > scroller.clientHeight + 2;
+    const atBottom  = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 4;
+    sec.classList.toggle('has-overflow', overflows);
+    sec.classList.toggle('at-bottom',    !overflows || atBottom);
+  });
+}
+
+// Attach scroll listeners once (idempotent — guard with a flag on the element)
+function attachScrollFadeListeners() {
+  document.querySelectorAll('.obj-section .table-scroll').forEach(scroller => {
+    if (scroller._scrollFadeAttached) return;
+    scroller._scrollFadeAttached = true;
+    scroller.addEventListener('scroll', refreshScrollFades, { passive: true });
+  });
+}
+
+// ════════════════════════════════════════════════
 //  UI — DISCOVERY PANEL (tracks + anonymous clusters)
 // ════════════════════════════════════════════════
 function updateDiscoveryPanel(ev) {
   if (!ev) return;
+  if (DEBUG) updateDebugPanel(ev);
 
   function makeHit(type, key, label, pt, eta, phi, energy, charge) {
     return { key, type, label, pt, eta, phi, energy, charge, x:0, y:0, r:0 };
@@ -2077,6 +2330,11 @@ function updateDiscoveryPanel(ev) {
       `<td>${(2*Math.atan(Math.exp(-cl.eta))).toFixed(2)}</td>`;
     row.onclick = () => toggleSelect(hit);
   });
+
+  // After filling tables, re-evaluate which sections need the overflow fade
+  attachScrollFadeListeners();
+  // rAF so the browser has laid out the new rows before we measure scrollHeight
+  requestAnimationFrame(refreshScrollFades);
 }
 
 // ════════════════════════════════════════════════
@@ -2580,5 +2838,15 @@ function resetCuts() {
 }
 
 window.addEventListener('resize', render);
+window.addEventListener('resize', refreshScrollFades);
+
+// Re-evaluate the overflow fade whenever the right panel changes size
+// (cuts panel expand/collapse, window resize, font scaling, etc.)
+if (typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(refreshScrollFades).observe(
+    document.getElementById('disc-section') || document.body
+  );
+}
+
 applyLocale();   // stamp initial language before first render
 init();

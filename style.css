@@ -364,7 +364,26 @@ html, body {
 /* Objects tab — particle lists */
 .obj-pt-note { font-size: 9px; font-weight: 400; color: var(--muted); }
 
-.obj-section  { margin-bottom: 2px; }
+/* Each obj-section must be a flex column so .table-scroll's flex: 1 1 0 takes effect */
+.obj-section {
+  flex: 1 1 0; min-height: 0;
+  display: flex; flex-direction: column;
+  margin-bottom: 2px;
+  position: relative;
+}
+/* Scroll-overflow fade: shown when section has overflow but is not scrolled to bottom */
+.obj-section::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 28px;
+  background: linear-gradient(transparent, var(--bg));
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.obj-section.has-overflow::after  { opacity: 1; }
+.obj-section.at-bottom::after     { opacity: 0; }
 
 .obj-sec-hdr  {
   font-size: 9px; font-weight: 700; text-transform: uppercase;
@@ -452,7 +471,7 @@ html, body {
 .cls-btn + .cls-btn { margin-left: 4px; }
 
 /* Objects tab — particle summary cards (kept for detector totals) */
-#pcards { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 0 2px; overflow-y: auto; }
+#pcards { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 0 2px; overflow-y: auto; }
 
 .pcard {
   background: var(--bg3); border-radius: 4px; padding: 3px 7px;
@@ -719,3 +738,59 @@ html, body {
 }
 
 #btn-change-group:hover { color: #90caf9; border-color: #2979ff; }
+
+/* ── Debug panel (?debug URL param) ────────────────────────────────────── */
+#debug-panel:empty { display: none; }
+#debug-panel {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  max-height: 38vh;
+  overflow-y: auto;
+  background: #07070e;
+  border-top: 2px solid #2a2a4a;
+  font-family: 'Courier New', monospace;
+  font-size: 10.5px;
+  color: #b8c0d8;
+  z-index: 9000;
+  padding: 4px 8px 8px;
+}
+.dbg-hdr {
+  position: sticky; top: 0;
+  background: #07070e;
+  padding: 3px 0 4px;
+  border-bottom: 1px solid #2a2a4a;
+  font-size: 11px; font-weight: bold; color: #7ec8e3;
+  margin-bottom: 4px;
+}
+.dbg-cols {
+  display: flex; gap: 12px; align-items: flex-start;
+}
+.dbg-sec { flex: 1 1 0; min-width: 0; }
+.dbg-sec b { display: block; color: #90caf9; margin-bottom: 2px; font-size: 10.5px; }
+.dbg-tbl {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 10px;
+}
+.dbg-tbl th {
+  background: #0e0e1e;
+  color: #7986cb;
+  padding: 1px 4px;
+  text-align: left;
+  border-bottom: 1px solid #2a2a4a;
+  white-space: nowrap;
+}
+.dbg-tbl td {
+  padding: 1px 4px;
+  border-bottom: 1px solid #12121f;
+  white-space: nowrap;
+  vertical-align: top;
+}
+.dbg-tbl td.dbg-note {
+  white-space: normal;
+  word-break: break-all;
+  max-width: 320px;
+  color: #8899bb;
+}
+.dbg-tbl tr.dbg-dim td { opacity: 0.45; }
+.dbg-dim { color: #55556e; }
