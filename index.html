@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" id="html-root">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
@@ -19,14 +19,14 @@
     <div id="group-logo">webHYPATIA</div>
     <div id="group-subtitle">ATLAS · LHC · CERN</div>
     <div class="group-field">
-      <label for="sel-uni">University</label>
+      <label for="sel-uni" data-i18n="lbl.university">University</label>
       <select id="sel-uni"></select>
     </div>
     <div class="group-field">
-      <label for="sel-grp">Group</label>
+      <label for="sel-grp" data-i18n="lbl.group">Group</label>
       <select id="sel-grp"></select>
     </div>
-    <button id="btn-start" disabled>Start →</button>
+    <button id="btn-start" disabled data-i18n="btn.start">Start →</button>
     <div id="group-credit">
       Based on <a href="https://zenodo.org/records/3406195" target="_blank" rel="noopener">HYPATIA 7.4</a>
       by C. Kourkoumelis &amp; S. Vourakis (Univ. of Athens / IASA) · CC BY 3.0
@@ -40,13 +40,13 @@
   <div id="header">
     <div id="header-left">
       <h1>webHYPATIA</h1>
-      <button id="btn-change-group" onclick="changeGroup()" title="Switch university / group">⇄ Group</button>
+      <button id="btn-change-group" onclick="changeGroup()" data-i18n="btn.changeGroup" data-i18n-title="title.changeGroup" title="Switch university / group">⇄ Group</button>
     </div>
     <!-- Navigation (HYPATIA-style: in toolbar) -->
     <div id="header-nav">
-      <button class="nav-btn" id="btn-prev" disabled>◀ Prev</button>
+      <button class="nav-btn" id="btn-prev" disabled data-i18n="btn.prev">◀ Prev</button>
       <div id="evt-counter">— / 50</div>
-      <button class="nav-btn" id="btn-next">Next ▶</button>
+      <button class="nav-btn" id="btn-next" data-i18n="btn.next">Next ▶</button>
     </div>
     <div id="event-meta">Loading…</div>
     <!-- Mobile view tabs (only visible on small screens) -->
@@ -54,7 +54,8 @@
       <button class="mtab on" id="tab-rp" onclick="setMobileView('rp')">r-φ</button>
       <button class="mtab"    id="tab-lz" onclick="setMobileView('lz')">ρ-z</button>
     </div>
-    <button id="btn-light" onclick="toggleLight()">☀ Light</button>
+    <button id="btn-lang" onclick="setLang(currentLang==='en'?'fr':'en')" data-i18n="btn.lang">FR</button>
+    <button id="btn-light" onclick="toggleLight()" data-i18n="btn.light">☀ Light</button>
   </div>
 
   <!-- MAIN AREA: left canvases + right data panel (HYPATIA layout) -->
@@ -72,7 +73,7 @@
             <button class="zoom-btn zoom-reset" onclick="stepZoom('rp', 0)">⊙</button>
             <button class="zoom-btn" onclick="stepZoom('rp', 0.77)">−</button>
           </div>
-          <div class="view-label">Transverse (r-φ)</div>
+          <div class="view-label" data-i18n="view.rp">Transverse (r-φ)</div>
         </div>
         <div class="view-wrap" id="wrap-lz">
           <canvas id="canvas-lz"></canvas>
@@ -81,18 +82,18 @@
             <button class="zoom-btn zoom-reset" onclick="stepZoom('lz', 0)">⊙</button>
             <button class="zoom-btn" onclick="stepZoom('lz', 0.77)">−</button>
           </div>
-          <div class="view-label">Longitudinal (ρ-z)</div>
+          <div class="view-label" data-i18n="view.lz">Longitudinal (ρ-z)</div>
         </div>
       </div>
 
       <!-- LAYER TOGGLES — only raw detector signals; labeled objects hidden -->
       <div id="toggle-bar">
-        <span class="show-lbl">Show:</span>
-        <button class="tgl on" data-layer="tracks"  data-color="#4fc3f7" onclick="setLayer('tracks',this)">Tracks</button>
-        <button class="tgl on" data-layer="emcal"   data-color="#ffd600" onclick="setLayer('emcal',this)">EM cal</button>
-        <button class="tgl on" data-layer="hadcal"  data-color="#ff9100" onclick="setLayer('hadcal',this)">HAD cal</button>
-        <button class="tgl on" data-layer="photons" data-color="#ffd600" onclick="setLayer('photons',this)">Clusters</button>
-        <button class="tgl on" data-layer="muons"   data-color="#b388ff" onclick="setLayer('muons',this)">Muon sys.</button>
+        <span class="show-lbl" data-i18n="show">Show:</span>
+        <button class="tgl on" data-layer="tracks"  data-color="#4fc3f7" onclick="setLayer('tracks',this)" data-i18n="layer.tracks">Tracks</button>
+        <button class="tgl on" data-layer="emcal"   data-color="#ffd600" onclick="setLayer('emcal',this)"  data-i18n="layer.emcal">EM cal</button>
+        <button class="tgl on" data-layer="hadcal"  data-color="#ff9100" onclick="setLayer('hadcal',this)" data-i18n="layer.hadcal">HAD cal</button>
+        <button class="tgl on" data-layer="photons" data-color="#ffd600" onclick="setLayer('photons',this)" data-i18n="layer.clusters">Clusters</button>
+        <button class="tgl on" data-layer="muons"   data-color="#b388ff" onclick="setLayer('muons',this)"  data-i18n="layer.muons">Muon sys.</button>
         <button class="tgl"    data-layer="met"     data-color="#f44336" onclick="setLayer('met',this)">MET</button>
         <!-- Hidden labeled-object overlays (kept for code completeness, not shown in exercise) -->
         <button id="btn-jets-tgl"  class="tgl" style="display:none" data-layer="jets"      data-color="#ff6d00" onclick="setLayer('jets',this)">Jets</button>
@@ -101,11 +102,11 @@
 
       <!-- SELECTION PANEL -->
       <div id="selection-panel">
-        <div id="sel-instructions">Use the Discovery panel → click tracks &amp; clusters to identify particles</div>
+        <div id="sel-instructions" data-i18n="sel.instructions">Use the Discovery panel → click tracks &amp; clusters to identify particles</div>
         <div id="sel-chips"></div>
         <div id="sel-mass" style="display:none"></div>
-        <button id="btn-record" onclick="recordMeasurement()" style="display:none">⊕ Record</button>
-        <button id="sel-clear" onclick="clearSelection()" style="display:none">Clear</button>
+        <button id="btn-record" onclick="recordMeasurement()" style="display:none" data-i18n="btn.record">⊕ Record</button>
+        <button id="sel-clear" onclick="clearSelection()" style="display:none" data-i18n="btn.clear">Clear</button>
       </div>
 
       <!-- MEASUREMENTS PANEL -->
@@ -113,9 +114,9 @@
         <div id="meas-header">
           <span id="meas-count">No measurements yet</span>
           <div id="meas-actions">
-            <button id="btn-export"     onclick="exportMeasurements()" disabled>⬇ Export .txt</button>
-            <button id="btn-meas-clear" onclick="clearMeasurements()" style="display:none">✕ Clear all</button>
-            <button id="btn-reset-session" onclick="resetSession()" title="Clear saved progress and return to group selector">↺ Reset</button>
+            <button id="btn-export"     onclick="exportMeasurements()" disabled data-i18n="btn.export">⬇ Export .txt</button>
+            <button id="btn-meas-clear" onclick="clearMeasurements()" style="display:none" data-i18n="btn.clearAll">✕ Clear all</button>
+            <button id="btn-reset-session" onclick="resetSession()" data-i18n="btn.reset" data-i18n-title="title.reset" title="Clear saved progress and return to group selector">↺ Reset</button>
           </div>
         </div>
         <div id="meas-list"></div>
@@ -128,11 +129,11 @@
 
       <!-- Discovery section — fills available space, tables scroll inside -->
       <div id="disc-section">
-        <div class="panel-title">Discovery <span class="obj-pt-note">click rows to select</span></div>
+        <div class="panel-title"><span data-i18n="disc.title">Discovery</span> <span class="obj-pt-note" data-i18n="disc.subtitle">click rows to select</span></div>
 
         <!-- Tracks -->
         <div class="obj-section">
-          <div class="obj-sec-hdr disc-hdr-tracks">Tracks</div>
+          <div class="obj-sec-hdr disc-hdr-tracks" data-i18n="disc.tracks">Tracks</div>
           <div class="table-scroll">
             <table class="obj-table">
               <thead><tr>
@@ -145,7 +146,7 @@
 
         <!-- Calorimeter clusters -->
         <div class="obj-section">
-          <div class="obj-sec-hdr disc-hdr-clust">Calorimeter Clusters</div>
+          <div class="obj-sec-hdr disc-hdr-clust" data-i18n="disc.clusters">Calorimeter Clusters</div>
           <div class="table-scroll">
             <table class="obj-table">
               <thead><tr>
@@ -162,7 +163,7 @@
 
       <!-- Cuts section — pinned at bottom -->
       <div id="cuts-section">
-        <div class="panel-title">Track Quality Cuts</div>
+        <div class="panel-title" data-i18n="cuts.title">Track Quality Cuts</div>
         <div class="cuts-grid">
 
           <!-- pT -->
@@ -243,11 +244,11 @@
             </div>
           </div>
 
-          <div class="cut-desc">
+          <div class="cut-desc" data-i18n="cuts.desc">
             d₀/z₀ in cm (2.5 mm = 0.25 cm). TRT unavailable for |η|&nbsp;&gt;&nbsp;2.0.
           </div>
 
-          <button class="cut-reset-btn" onclick="resetCuts()">↺ Reset to defaults</button>
+          <button class="cut-reset-btn" onclick="resetCuts()" data-i18n="cuts.reset">↺ Reset to defaults</button>
         </div>
       </div>
 

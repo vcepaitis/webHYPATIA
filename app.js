@@ -10,6 +10,197 @@ window.addEventListener('unhandledrejection', e => {
 // ──────────────────────────────────────────────────────────────────────────
 
 // ════════════════════════════════════════════════
+//  LOCALISATION (i18n)
+// ════════════════════════════════════════════════
+const LOCALES = {
+  en: {
+    // Group overlay
+    'lbl.university': 'University',
+    'lbl.group': 'Group',
+    'btn.start': 'Start →',
+    // Header
+    'btn.changeGroup': '⇄ Group',
+    'title.changeGroup': 'Switch university / group',
+    'btn.prev': '◀ Prev',
+    'btn.next': 'Next ▶',
+    'btn.light': '☀ Light',
+    'btn.dark':  '🌙 Dark',
+    'btn.lang':  'FR',
+    // Toggle bar
+    'show': 'Show:',
+    'layer.tracks':   'Tracks',
+    'layer.emcal':    'EM cal',
+    'layer.hadcal':   'HAD cal',
+    'layer.clusters': 'Clusters',
+    'layer.muons':    'Muon sys.',
+    // Selection panel
+    'sel.instructions': 'Use the Discovery panel → click tracks & clusters to identify particles',
+    'btn.record': '⊕ Record',
+    'btn.clear':  'Clear',
+    // Measurements panel
+    'meas.none':       'No measurements yet',
+    'meas.count':      '{n} measurement(s)',
+    'btn.export':      '⬇ Export .txt',
+    'btn.clearAll':    '✕ Clear all',
+    'btn.reset':       '↺ Reset',
+    'title.reset':     'Clear saved progress and return to group selector',
+    // Discovery panel
+    'disc.title':      'Discovery',
+    'disc.subtitle':   'click rows to select',
+    'disc.tracks':     'Tracks',
+    'disc.clusters':   'Calorimeter Clusters',
+    // Cuts panel
+    'cuts.title':      'Track Quality Cuts',
+    'cuts.desc':       'd₀/z₀ in cm (2.5 mm = 0.25 cm). TRT unavailable for |η| > 2.0.',
+    'cuts.reset':      '↺ Reset to defaults',
+    // View labels
+    'view.rp': 'Transverse (r-φ)',
+    'view.lz': 'Longitudinal (ρ-z)',
+    // Detector cards
+    'card.innerDet': 'Inner Det.',
+    'card.muonSys':  'Muon Sys.',
+    'card.tracks':   'Tracks',
+    'card.segs':     'Segs',
+    // Dynamic: selection hints
+    'hint.classify':       'Click the e/μ or γ button above to classify',
+    'hint.classifyFirst':  'Classify remaining item(s) above first',
+    'hint.oneMorePhoton':  'Select one more γ',
+    'hint.moreParticles':  'Select more particles',
+    'hint.selectToCompute':'Select particles to compute a mass',
+    'hint.oneMore':        'Select one more…',
+    // Dynamic: buttons
+    'btn.alreadyRecorded': '✗ Already recorded',
+    'btn.recorded':        '✓ Recorded',
+    // Dynamic: confirms
+    'confirm.unrecorded':  'You have an unrecorded measurement. Leave this event without recording?',
+    'confirm.clearAll':    'Clear all {n} recorded measurement(s)?',
+    'confirm.reset':       'Clear all saved progress and return to the group selector?',
+    // Errors
+    'err.loadEvents': 'Error loading events',
+    // Loading
+    'loading': 'Loading…',
+  },
+  fr: {
+    // Group overlay
+    'lbl.university': 'Université',
+    'lbl.group': 'Groupe',
+    'btn.start': 'Démarrer →',
+    // Header
+    'btn.changeGroup': '⇄ Groupe',
+    'title.changeGroup': 'Changer d\'université / groupe',
+    'btn.prev': '◀ Préc.',
+    'btn.next': 'Suiv. ▶',
+    'btn.light': '☀ Clair',
+    'btn.dark':  '🌙 Sombre',
+    'btn.lang':  'EN',
+    // Toggle bar
+    'show': 'Afficher :',
+    'layer.tracks':   'Traces',
+    'layer.emcal':    'Cal. EM',
+    'layer.hadcal':   'Cal. HAD',
+    'layer.clusters': 'Amas',
+    'layer.muons':    'Syst. muons',
+    // Selection panel
+    'sel.instructions': 'Panneau Découverte → cliquez sur les traces et amas pour identifier les particules',
+    'btn.record': '⊕ Enregistrer',
+    'btn.clear':  'Effacer',
+    // Measurements panel
+    'meas.none':       'Aucune mesure',
+    'meas.count':      '{n} mesure(s)',
+    'btn.export':      '⬇ Exporter .txt',
+    'btn.clearAll':    '✕ Tout effacer',
+    'btn.reset':       '↺ Réinitialiser',
+    'title.reset':     'Effacer la progression et revenir au sélecteur de groupe',
+    // Discovery panel
+    'disc.title':      'Découverte',
+    'disc.subtitle':   'cliquer pour sélectionner',
+    'disc.tracks':     'Traces',
+    'disc.clusters':   'Amas calorimétriques',
+    // Cuts panel
+    'cuts.title':      'Coupures sur les traces',
+    'cuts.desc':       'd₀/z₀ en cm (2,5 mm = 0,25 cm). TRT indisponible pour |η| > 2,0.',
+    'cuts.reset':      '↺ Réinitialiser',
+    // View labels
+    'view.rp': 'Transverse (r-φ)',
+    'view.lz': 'Longitudinal (ρ-z)',
+    // Detector cards
+    'card.innerDet': 'Dét. interne',
+    'card.muonSys':  'Syst. muons',
+    'card.tracks':   'Traces',
+    'card.segs':     'Seg.',
+    // Dynamic: selection hints
+    'hint.classify':       'Cliquez sur e/μ ou γ ci-dessus pour classifier',
+    'hint.classifyFirst':  'Classifiez d\'abord les éléments restants ci-dessus',
+    'hint.oneMorePhoton':  'Sélectionnez un γ de plus',
+    'hint.moreParticles':  'Sélectionnez plus de particules',
+    'hint.selectToCompute':'Sélectionnez des particules pour calculer une masse',
+    'hint.oneMore':        'Sélectionnez une de plus…',
+    // Dynamic: buttons
+    'btn.alreadyRecorded': '✗ Déjà enregistré',
+    'btn.recorded':        '✓ Enregistré',
+    // Dynamic: confirms
+    'confirm.unrecorded':  'Mesure non enregistrée. Quitter cet événement sans enregistrer ?',
+    'confirm.clearAll':    'Effacer {n} mesure(s) enregistrée(s) ?',
+    'confirm.reset':       'Effacer toute la progression et revenir au sélecteur de groupe ?',
+    // Errors
+    'err.loadEvents': 'Erreur lors du chargement des événements',
+    // Loading
+    'loading': 'Chargement…',
+  },
+};
+
+/** Default language for a given university key (e.g. 'unige_2026' → 'fr') */
+function defaultLangForUni(uni) {
+  if (!uni) return 'en';
+  if (uni.startsWith('unige')) return 'fr';
+  return 'en';
+}
+
+/**
+ * Apply the university's default locale, but only if the user hasn't
+ * already made an explicit choice (i.e. hypatia_lang is not in localStorage).
+ */
+function applyDefaultLang(uni) {
+  try { if (localStorage.getItem('hypatia_lang')) return; } catch(e) {}
+  currentLang = defaultLangForUni(uni);
+}
+
+let currentLang = (() => {
+  try { return localStorage.getItem('hypatia_lang') || 'en'; } catch(e) { return 'en'; }
+})();
+
+/** Translate key, optionally interpolating {n} */
+function t(key, vars) {
+  const dict = LOCALES[currentLang] || LOCALES.en;
+  let s = dict[key] ?? LOCALES.en[key] ?? key;
+  if (vars) Object.entries(vars).forEach(([k, v]) => { s = s.replace(`{${k}}`, v); });
+  return s;
+}
+
+/** Re-stamp all data-i18n / data-i18n-title elements in the DOM */
+function applyLocale() {
+  document.documentElement.lang = currentLang;
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const v = t(el.getAttribute('data-i18n'));
+    if (v) el.textContent = v;
+  });
+  document.querySelectorAll('[data-i18n-title]').forEach(el => {
+    const v = t(el.getAttribute('data-i18n-title'));
+    if (v) el.title = v;
+  });
+  // Re-render panels that contain translated dynamic strings
+  updateMeasurementBar();
+  updateSelectionPanel();
+  if (data) updateDiscoveryPanel(data);
+}
+
+function setLang(lang) {
+  currentLang = lang;
+  try { localStorage.setItem('hypatia_lang', lang); } catch(e) {}
+  applyLocale();
+}
+
+// ════════════════════════════════════════════════
 //  CONFIGURATION
 // ════════════════════════════════════════════════
 const N_EVENTS = 50;
@@ -626,14 +817,14 @@ function isCompleteChannel(particles) {
 function selectionHint(particles) {
   const ps = particles.filter(p => p.type !== 'track' && p.type !== 'cluster');
   const nPending = particles.filter(p => p.type === 'track' || p.type === 'cluster').length;
-  if (nPending > 0 && ps.length === 0) return 'Click the e/μ or γ button above to classify';
-  if (nPending > 0) return 'Classify remaining item(s) above first';
+  if (nPending > 0 && ps.length === 0) return t('hint.classify');
+  if (nPending > 0) return t('hint.classifyFirst');
   const nE = ps.filter(p => p.type === 'electron').length;
   const nM = ps.filter(p => p.type === 'muon').length;
   const nG = ps.filter(p => p.type === 'photon').length;
-  if (nG === 1)  return 'Select one more γ';
-  if (ps.length > 0) return 'Select more particles';
-  return 'Select particles to compute a mass';
+  if (nG === 1)  return t('hint.oneMorePhoton');
+  if (ps.length > 0) return t('hint.moreParticles');
+  return t('hint.selectToCompute');
 }
 
 // Find the Z₁/Z₂ pairing that minimises |M₁−MZ| + |M₂−MZ| (best Z pair).
@@ -692,8 +883,8 @@ function recordMeasurement() {
   // Only one measurement per event — flash the button to inform the student
   if (measurements.some(m => m.evNum === evNum)) {
     const btn = document.getElementById('btn-record');
-    if (btn) { btn.textContent = '✗ Already recorded'; btn.disabled = true;
-      setTimeout(() => { btn.textContent = '⊕ Record'; btn.disabled = false; }, 1200); }
+    if (btn) { btn.textContent = t('btn.alreadyRecorded'); btn.disabled = true;
+      setTimeout(() => { btn.textContent = t('btn.record'); btn.disabled = false; }, 1200); }
     return;
   }
   const entry   = { mass, label, evNum, evIdx: idx };
@@ -703,8 +894,8 @@ function recordMeasurement() {
   saveState();
   // Flash the record button
   const btn = document.getElementById('btn-record');
-  if (btn) { btn.textContent = '✓ Recorded'; btn.disabled = true;
-    setTimeout(() => { btn.textContent = '⊕ Record'; btn.disabled = false; }, 900); }
+  if (btn) { btn.textContent = t('btn.recorded'); btn.disabled = true;
+    setTimeout(() => { btn.textContent = t('btn.record'); btn.disabled = false; }, 900); }
   // Clear selection so btn-record hides and confirm-on-navigate won't fire
   selected = [];
   render();
@@ -742,7 +933,7 @@ function deleteMeasurement(idx) {
 }
 
 function clearMeasurements() {
-  if (measurements.length && !confirm(`Clear all ${measurements.length} recorded measurements?`)) return;
+  if (measurements.length && !confirm(t('confirm.clearAll', { n: measurements.length }))) return;
   measurements = []; updateMeasurementBar(); saveState();
 }
 
@@ -754,7 +945,7 @@ function updateMeasurementBar() {
   const listEl   = document.getElementById('meas-list');
   if (!countEl) return;
 
-  countEl.textContent = n ? `${n} measurement${n>1?'s':''}` : 'No measurements yet';
+  countEl.textContent = n ? t('meas.count', { n }) : t('meas.none');
   exportBtn.disabled = n === 0;
   clearBtn.style.display = n > 0 ? 'inline-block' : 'none';
 
@@ -881,7 +1072,7 @@ function updateSelectionPanel() {
       if (recordBtn) recordBtn.style.display = 'none';
     }
   } else {
-    massEl.textContent = selected.length === 1 ? selectionHint(selected) : 'Select one more…';
+    massEl.textContent = selected.length === 1 ? selectionHint(selected) : t('hint.oneMore');
     massEl.style.cssText = '';
     massEl.style.display = 'inline-block';
     if (recordBtn) recordBtn.style.display = 'none';
@@ -1912,10 +2103,10 @@ function updateUI(ev) {
   const totEM   = (ev.lar.energy||[]).reduce((s,e) => s+(e>0.5?e:0), 0);
   const totHAD  = (ev.tile.energy||[]).reduce((s,e) => s+(e>0.3?e:0), 0);
 
-  infoCard('e',  'Inner Det.', [`Tracks: <b>${nTracks}</b>`]);
+  infoCard('e',  t('card.innerDet'), [`${t('card.tracks')}: <b>${nTracks}</b>`]);
   if (totEM  > 0) infoCard('g',  'EM Cal.',  [`ΣE: <b>${totEM.toFixed(0)} GeV</b>`]);
   if (totHAD > 0) infoCard('mu', 'HAD Cal.', [`ΣE: <b>${totHAD.toFixed(0)} GeV</b>`]);
-  if (nMuTrks > 0) infoCard('mu', 'Muon Sys.', [`Segs: <b>${nMuTrks}</b>`]);
+  if (nMuTrks > 0) infoCard('mu', t('card.muonSys'), [`${t('card.segs')}: <b>${nMuTrks}</b>`]);
   if (met.et > 10) infoCard('m', 'MET',      [`ET: <b>${met.et.toFixed(0)} GeV</b>`]);
 
   document.getElementById('evt-counter').textContent = `Event ${idx+1} / ${N_EVENTS}`;
@@ -1964,7 +2155,7 @@ async function go(delta) {
                  && chargesValid(selected).valid
                  && isCompleteChannel(selected);
   if (canRecord) {
-    if (!confirm('You have an unrecorded measurement. Leave this event without recording?')) return;
+    if (!confirm(t('confirm.unrecorded'))) return;
   }
   isNavigating = true;
   try {
@@ -2226,8 +2417,10 @@ function setupGroupSelector(manifest) {
   btnStart.addEventListener('click', () => {
     eventsBase = `events/${uniSel.value}/${grpSel.value}`;
     clearSavedState();
+    applyDefaultLang(uniSel.value);   // set FR for unige if no explicit pref
     cache = {}; idx = 0; data = null;
     document.getElementById('group-overlay').style.display = 'none';
+    applyLocale();
     startSession();
   });
 }
@@ -2248,7 +2441,7 @@ async function startSession() {
   saveState();
   try { data = await loadEvent(idx); render(); updateUI(data); }
   catch(e) {
-    document.getElementById('event-meta').textContent = 'Error loading events';
+    document.getElementById('event-meta').textContent = t('err.loadEvents');
     console.error(e);
   }
   ld.style.display = 'none';
@@ -2273,7 +2466,7 @@ function clearSavedState() {
 }
 
 function resetSession() {
-  if (!confirm('Clear all saved progress and return to the group selector?')) return;
+  if (!confirm(t('confirm.reset'))) return;
   clearSavedState();
   location.reload();
 }
@@ -2308,8 +2501,9 @@ async function init() {
         eventsBase   = saved.eventsBase;
         idx          = saved.idx || 0;
         measurements = Array.isArray(saved.measurements) ? saved.measurements : [];
+        applyDefaultLang(uni);   // set FR for unige if no explicit pref
         document.getElementById('group-overlay').style.display = 'none';
-        updateMeasurementBar();
+        applyLocale();
         startSession();
         return;
       }
@@ -2333,7 +2527,7 @@ async function init() {
 function toggleLight() {
   document.body.classList.toggle('light');
   const btn = document.getElementById('btn-light');
-  if (btn) btn.textContent = document.body.classList.contains('light') ? '🌙 Dark' : '☀ Light';
+  if (btn) btn.textContent = document.body.classList.contains('light') ? t('btn.dark') : t('btn.light');
 }
 
 // ════════════════════════════════════════════════
@@ -2386,4 +2580,5 @@ function resetCuts() {
 }
 
 window.addEventListener('resize', render);
+applyLocale();   // stamp initial language before first render
 init();
