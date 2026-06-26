@@ -901,6 +901,7 @@ function recordMeasurement() {
   if (leptons.length >= 4) entry.zPairs = zPairInfo(leptons);
   measurements.push(entry);
   updateMeasurementBar();
+  updateEvtDots();
   saveState();
   // Flash the record button
   const btn = document.getElementById('btn-record');
@@ -944,7 +945,32 @@ function deleteMeasurement(idx) {
 
 function clearMeasurements() {
   if (measurements.length && !confirm(t('confirm.clearAll', { n: measurements.length }))) return;
-  measurements = []; updateMeasurementBar(); saveState();
+  measurements = []; updateMeasurementBar(); updateEvtDots(); saveState();
+}
+
+function updateEvtDots() {
+  const wrap = document.getElementById('evt-dots');
+  if (!wrap || !N_EVENTS) return;
+  // Build set of recorded event indices (0-based)
+  const recordedIndices = new Set(measurements.map(m => m.evIdx));
+  // Create dots if not yet built, otherwise just update classes
+  if (wrap.children.length !== N_EVENTS) {
+    wrap.innerHTML = '';
+    for (let i = 0; i < N_EVENTS; i++) {
+      const d = document.createElement('span');
+      d.className = 'evt-dot';
+      d.title = `Event ${i+1}`;
+      d.addEventListener('click', () => { if (!isNavigating) go(i - idx); });
+      wrap.appendChild(d);
+    }
+  }
+  Array.from(wrap.children).forEach((d, i) => {
+    d.classList.toggle('dot-done',    recordedIndices.has(i));
+    d.classList.toggle('dot-current', i === idx);
+  });
+  // Scroll current dot into view
+  const currentDot = wrap.children[idx];
+  if (currentDot) currentDot.scrollIntoView({ inline: 'nearest', block: 'nearest' });
 }
 
 function updateMeasurementBar() {
@@ -1162,25 +1188,37 @@ function classifySelected(key, newType) {
 // ════════════════════════════════════════════════
 //  TYPE RESOLUTION HELPERS  (used by canvas draw + Discovery panel)
 // ════════════════════════════════════════════════
-// Return 'electron' if any track within ΔR < 0.1 passes the *matching* cuts; else 'photon'.
-// Matching cuts are intentionally looser than the display cuts (passTrackCuts):
-//  - d0/z0 and pT ratio guard against accidental soft/displaced coincidences
-//  - NO TRT requirement: bremsstrahlung electrons and near-endcap tracks legitimately have 0 TRT hits
-//  - nPix >= 1, nSCT >= 4: minimal confirmation the track originates from the IP
+// Return 'electron' if the cluster has a matched ID track; else 'photon'.
+//
+// Primary path — tIdx (ATLAS-provided trackIndex):
+//   If tIdx >= 0 and the corresponding track exists with |pT| > 0, trust the
+//   reconstruction and return 'electron' immediately.  This handles bremsstrahlung
+//   electrons whose track pT is a small fraction of the cluster ET, and tracks
+//   with 0 TRT hits near the endcap, where geometry-only matching fails.
+//
+// Fallback path — ΔR < 0.1 geometry matching with loose cuts:
+//   Used for photon-collection entries (no tIdx) or if tIdx is absent/invalid.
+//   Intentionally looser than the display cuts (passTrackCuts):
+//   - d0/z0 and pT ratio guard against accidental soft/displaced coincidences
+//   - NO TRT requirement: bremsstrahlung / near-endcap tracks have 0 TRT hits
+//   - nPix >= 1, nSCT >= 4: minimal IP-origin confirmation
 function passMatchCuts(tk, clPt) {
   if (Math.abs(tk.pt)    < trackCuts.minPt)  return false;
   if (Math.abs(tk.eta)   > trackCuts.maxEta) return false;
   if (Math.abs(tk.d0||0) > trackCuts.maxD0)  return false;
   if (Math.abs(tk.z0||0) > trackCuts.maxZ0)  return false;
   if (clPt > 0 && Math.abs(tk.pt) < clPt * 0.25)  return false;
-  // Loose hit requirements — skip if unavailable (< 0)
   if (tk.nPixHits >= 0 && tk.nPixHits < 1) return false;
   if (tk.nSCTHits >= 0 && tk.nSCTHits < 4) return false;
-  // No TRT cut: bremsstrahlung electrons may leave 0 TRT hits even inside acceptance
   return true;
 }
 
-function resolveClustrType(phi, eta, tracks, clPt = 0) {
+function resolveClustrType(phi, eta, tracks, clPt = 0, tIdx = -1) {
+  // Primary: trust the ATLAS-linked track index
+  if (tIdx >= 0 && tracks && tracks[tIdx] && Math.abs(tracks[tIdx].pt) > 0) {
+    return 'electron';
+  }
+  // Fallback: loose geometry match
   const DR_MAX = 0.1;
   for (const tk of (tracks || [])) {
     if (!passMatchCuts(tk, clPt)) continue;
@@ -1243,8 +1281,10 @@ function mergedEmClusters(ev) {
       return Math.sqrt(dPhi*dPhi + (ph.eta - el.eta)**2) < 0.1;
     });
     if (nearPhoton) return false;
-    // Only include if at least one ID track is nearby (ΔR < 0.2) — no quality cuts,
-    // just confirming a charged particle produced this deposit
+    // Include if the ATLAS-linked track exists (primary), or any ID track is
+    // nearby within ΔR < 0.2 (fallback for entries without a valid tIdx)
+    const tIdx = el.trackIndex ?? -1;
+    if (tIdx >= 0 && tracks[tIdx] && Math.abs(tracks[tIdx].pt) > 0) return true;
     return tracks.some(tk => {
       let dPhi = Math.abs(tk.phi0 - el.phi);
       if (dPhi > Math.PI) dPhi = 2*Math.PI - dPhi;
@@ -1524,7 +1564,7 @@ function drawTransverse(ev) {
 
     for (const cl of clusters_rp) {
       if (Math.abs(cl.eta) > 2.5 || cl.pt < OBJ_PT_MIN) continue;
-      if (resolveClustrType(cl._phi, cl.eta, ev.tracks, cl.pt) !== 'photon') continue;  // skip electron-matched
+      if (resolveClustrType(cl._phi, cl.eta, ev.tracks, cl.pt, cl.trackIndex ?? -1) !== 'photon') continue;  // skip electron-matched
       const key   = cl._key, sel = isSelected(key);
       const barH  = Math.max(8, Math.min(BAR_MAX, cl.pt * BAR_SCALE));
       const rBase = D.tilOuter;
@@ -1568,7 +1608,7 @@ function drawTransverse(ev) {
     const elClusters = mergedEmClusters(ev);
     for (const cl of elClusters) {
       if (Math.abs(cl.eta) > 2.5 || cl.pt < OBJ_PT_MIN) continue;
-      if (resolveClustrType(cl._phi, cl.eta, ev.tracks, cl.pt) !== 'electron') continue;
+      if (resolveClustrType(cl._phi, cl.eta, ev.tracks, cl.pt, cl.trackIndex ?? -1) !== 'electron') continue;
       const key  = cl._key, sel = isSelected(key);
       const barH = Math.max(8, Math.min(BAR_MAX_E, cl.pt * BAR_SCALE_E));
       const rBase = D.tilOuter, rTip = rBase + barH;
@@ -1910,7 +1950,7 @@ function drawLongitudinal(ev) {
     for (const ph of clusters_lz) {
       const cotTh = Math.sinh(ph.eta);
       if (Math.abs(cotTh) > 15 || ph.pt < OBJ_PT_MIN) continue;
-      if (resolveClustrType(ph._phi, ph.eta, ev.tracks, ph.pt) !== 'photon') continue;  // skip electron-matched
+      if (resolveClustrType(ph._phi, ph.eta, ev.tracks, ph.pt, ph.trackIndex ?? -1) !== 'photon') continue;  // skip electron-matched
       const key  = ph._key, sel = isSelected(key);
       const zS   = D.larOuter * cotTh;                       // z at LAr outer cylinder
       const yS   = D.larOuter * Math.sin(ph._phi);           // Cartesian y (z-y view)
@@ -1967,7 +2007,7 @@ function drawLongitudinal(ev) {
     for (const cl of elClustersLZ) {
       const cotTh = Math.sinh(cl.eta);
       if (Math.abs(cotTh) > 15 || cl.pt < OBJ_PT_MIN) continue;
-      if (resolveClustrType(cl._phi || cl.phi, cl.eta, ev.tracks, cl.pt) !== 'electron') continue;
+      if (resolveClustrType(cl._phi || cl.phi, cl.eta, ev.tracks, cl.pt, cl.trackIndex ?? -1) !== 'electron') continue;
       const key  = cl._key, sel = isSelected(key);
       const clPhi = cl._phi || cl.phi;
       const zS   = D.larOuter * cotTh;                       // z at LAr outer cylinder
@@ -2089,7 +2129,7 @@ function updateDebugPanel(ev) {
   (ev.photonsRaw || []).forEach((ph, idx) => {
     const filteredIdx = rawToFilteredIdx.get(ph._rawIdx);
     const inMerged    = (filteredIdx != null) && merged.some(c => c._key === `photon_${filteredIdx}`);
-    const type        = inMerged ? resolveClustrType(ph.phi, ph.eta, ev.tracks, ph.pt) : null;
+    const type        = inMerged ? resolveClustrType(ph.phi, ph.eta, ev.tracks, ph.pt, ph.trackIndex ?? -1) : null;
     const {bestPass, bestAny} = trackMatch(ph.eta, ph.phi, 0.2);
     const passNote = bestPass.dr < 0.1
       ? `tk[${bestPass.i}] ΔR=${bestPass.dr.toFixed(3)} pt=${f2(bestPass.tk.pt)}`
@@ -2111,7 +2151,7 @@ function updateDebugPanel(ev) {
   // ElectronCollection
   ev.electrons.forEach((el, idx) => {
     const inMerged = merged.some(c => c._phi === el.phi && Math.abs(c.eta - el.eta) < 0.001);
-    const type     = inMerged ? resolveClustrType(el.phi, el.eta, ev.tracks, el.pt) : null;
+    const type     = inMerged ? resolveClustrType(el.phi, el.eta, ev.tracks, el.pt, el.trackIndex ?? -1) : null;
     const {bestPass, bestAny} = trackMatch(el.eta, el.phi, 0.2);
     // Why not green? Enumerate closest tracks within ΔR<0.15 and their fail reason
     let whyNote = '';
@@ -2327,7 +2367,7 @@ function updateDiscoveryPanel(ev) {
   .filter(cl => cl.pt >= OBJ_PT_MIN && Math.abs(cl.eta) <= 4)
   .map(cl => ({
     ...cl,
-    _type: resolveClustrType(cl._phi, cl.eta, ev.tracks, cl.pt) === 'electron' ? 'ecluster' : 'cluster',
+    _type: resolveClustrType(cl._phi, cl.eta, ev.tracks, cl.pt, cl.trackIndex ?? -1) === 'electron' ? 'ecluster' : 'cluster',
   }))
   .sort((a, b) => b.pt - a.pt);
 
@@ -2385,6 +2425,7 @@ function updateUI(ev) {
   document.getElementById('evt-counter').textContent = `Event ${idx+1} / ${N_EVENTS}`;
   document.getElementById('btn-prev').disabled = idx === 0;
   document.getElementById('btn-next').disabled = idx === N_EVENTS-1;
+  updateEvtDots();
 
   updateTrackTable(ev);
   updateDiscoveryPanel(ev);

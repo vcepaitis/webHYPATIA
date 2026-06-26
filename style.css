@@ -79,6 +79,27 @@ html, body {
 }
 #evt-counter { color: var(--muted); font-size: 12px; text-align: center; white-space: nowrap; min-width: 60px; }
 
+/* Event progress dot strip */
+#evt-dots-wrap {
+  overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none; max-width: 320px; flex-shrink: 1;
+}
+#evt-dots-wrap::-webkit-scrollbar { display: none; }
+#evt-dots {
+  display: flex; gap: 3px; align-items: center;
+  padding: 2px 1px;
+}
+.evt-dot {
+  flex: 0 0 auto;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--border);
+  cursor: pointer; transition: transform 0.1s, background 0.15s;
+}
+.evt-dot:hover        { transform: scale(1.4); }
+.evt-dot.dot-done     { background: #4caf50; }
+.evt-dot.dot-current  { box-shadow: 0 0 0 2px var(--text); }
+.evt-dot.dot-done.dot-current { background: #4caf50; box-shadow: 0 0 0 2px #4caf50, 0 0 0 3.5px var(--bg); }
+
 #event-meta { margin-left: auto; font-size: 12px; color: var(--muted); text-align: right; line-height: 1.4; }
 
 #btn-light, #btn-lang {
@@ -588,16 +609,18 @@ html, body {
     position: sticky; top: 0; z-index: 20;
     display: grid;
     grid-template-areas:
-      "title tabs light"
-      "nav   nav  nav  ";
-    grid-template-columns: 1fr auto auto;
+      "title tabs lang light"
+      "nav   nav  nav  nav  ";
+    grid-template-columns: 1fr auto auto auto;
     row-gap: 6px; column-gap: 8px;
     padding: 6px 10px 5px;
   }
   #header-left { grid-area: title; }
   #mobile-tabs { grid-area: tabs; display: flex; gap: 4px; }
+  #btn-lang    { grid-area: lang;  margin-left: 0; }
   #btn-light   { grid-area: light; margin-left: 0; }
   #header-nav  { grid-area: nav; justify-content: center; gap: 14px; }
+  #evt-dots-wrap { max-width: 160px; }
   #event-meta  { display: none; }   /* too crowded; run/evt shown on canvas */
 
   /* ── Main area: single-column scroll ── */
@@ -636,7 +659,12 @@ html, body {
   }
   #cuts-section  { max-height: none; overflow: visible; }
   #disc-section  { flex: none; min-height: 0; overflow: visible; }
+  /* On mobile disc-section has auto height (no free space to flex-grow into),
+     so reset obj-sections to natural height instead of collapsing to 0 */
+  .obj-section   { flex: none; }
   .table-scroll  { flex: none; max-height: 180px; }
+  /* Scroll-fade overlay doesn't apply on mobile (overflow: visible context) */
+  .obj-section::after { display: none; }
   /* #right-tab-bar / .rtab — removed (tab bar removed) */
 
   /* ── Track table: readable on small screen ── */
